@@ -1,0 +1,115 @@
+module AMY
+  WIRE: Hash[Symbol, String]
+  PARAM_AMP: Integer
+  PARAM_FEEDBACK: Integer
+  PARAM_PAN: Integer
+  PARAM_FILTER_FREQ: Integer
+  PARAM_RATIO: Integer
+  PARAM_RESONANCE: Integer
+  PARAM_PORTAMENTO: Integer
+  PARAM_VOLUME: Integer
+  PARAM_CHORUS_LEVEL: Integer
+  PARAM_REVERB_LEVEL: Integer
+  SYNTH_FLAGS_NO_NOTE_WARNINGS: Integer
+  DX7_FIRST_PATCH: Integer
+  DX7_PATCH_NAMES: Array[String]
+
+  def self.start: () -> bool
+  def self.running?: () -> bool
+  def self.reset: () -> nil
+  def self.render_load: () -> Float
+  def self.overloads: () -> Integer
+  def self.bleep: () -> nil
+  def self.blocks: () -> Integer
+  def self.patch_name: (Integer number) -> String
+  def self.wire: (String message) -> bool
+  def self.command: (**untyped params) -> bool
+  def self.command_hash: (Hash[Symbol, untyped] params) -> bool
+  def self.format_value: (untyped value) -> String
+  def self.scale: (Integer | Float value, Integer | Float min, Integer | Float max, ?log: bool) -> Float
+
+  # C bindings
+  def self._start: () -> bool
+  def self._running: () -> bool
+  def self._reset: () -> nil
+  def self._send: (String message) -> Integer
+  def self._send_packet: (Integer cable, Integer cin, Integer b1, Integer b2, Integer b3) -> Integer
+  def self._transport_bit: () -> Integer
+  def self._render_load: () -> Float
+  def self._overloads: () -> Integer
+  def self._bleep: () -> nil
+  def self._blocks: () -> Integer
+  def self._log_scale: (Float t, Integer | Float min, Integer | Float max) -> Float
+
+  class Synth
+    def self.instance: () -> Synth
+    def initialize: () -> void
+    def transport_id: () -> Integer
+    def send_packet: (Integer cable, Integer cin, Integer midi1, Integer midi2, Integer midi3) -> Integer
+    def bytes_available: () -> Integer
+    def read_available: () -> nil
+    def connected?: () -> bool
+    def device_info: () -> String
+  end
+
+  class FM
+    ALGO_OSC: Integer
+    FILTER_TYPES: Hash[Symbol, Integer]
+    CC_TARGETS: Hash[Symbol, Array[untyped]]
+
+    attr_reader channel: Integer
+    attr_reader voices: Integer
+    attr_reader patch: Integer
+    attr_reader synth: Synth
+
+    def initialize: (?channel: Integer, ?voices: Integer, ?patch: Integer) -> void
+    def synth_number: () -> Integer
+    def patch=: (Integer number) -> Integer
+    def op: (Integer n) -> Operator
+    def algorithm=: (Integer n) -> Integer
+    def algorithm: () -> Integer?
+    def feedback=: (Float v) -> Float
+    def feedback: () -> Float?
+    def filter=: (Symbol type) -> Symbol
+    def filter: () -> Symbol
+    def filter_freq=: (Integer | Float hz) -> (Integer | Float)
+    def filter_freq: () -> (Integer | Float)?
+    def resonance=: (Float q) -> Float
+    def resonance: () -> Float?
+    def volume=: (Float v) -> Float
+    def volume: () -> Float?
+    def reverb=: (Float v) -> Float
+    def reverb: () -> Float?
+    def chorus=: (Float v) -> Float
+    def set: (Symbol param, untyped value, ?op: Integer?) -> untyped
+    def get: (Symbol param, ?op: Integer?) -> untyped
+    def map_cc: (Integer cc, Symbol param, ?min: (Integer | Float)?, ?max: (Integer | Float)?, ?log: bool?, ?op: Integer?) -> bool
+    def unmap_cc: (?Integer? cc) -> bool
+    def osc_command: (Integer osc, Symbol key, untyped value) -> bool
+
+    class Operator
+      DEFAULT_ADSR: Array[Integer | Float]
+
+      attr_reader number: Integer
+
+      def initialize: (FM fm, Integer number) -> void
+      def osc: () -> Integer
+      def _forget: () -> void
+      def ratio=: (Integer | Float r) -> (Integer | Float)
+      def ratio: () -> (Integer | Float)?
+      def level=: (Float l) -> Float
+      def level: () -> Float?
+      def attack=: (Integer | Float ms) -> (Integer | Float)
+      def decay=: (Integer | Float ms) -> (Integer | Float)
+      def sustain=: (Float v) -> Float
+      def release=: (Integer | Float ms) -> (Integer | Float)
+      def attack: () -> (Integer | Float)
+      def decay: () -> (Integer | Float)
+      def sustain: () -> (Integer | Float)
+      def release: () -> (Integer | Float)
+      def envelope: (?attack: (Integer | Float)?, ?decay: (Integer | Float)?, ?sustain: Float?, ?release: (Integer | Float)?) -> bool
+      def set: (Symbol param, untyped value) -> untyped
+      def get: (Symbol param) -> untyped
+    end
+  end
+end
