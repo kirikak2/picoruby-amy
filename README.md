@@ -16,7 +16,7 @@ require 'midi'
 require 'amy'
 
 fm  = AMY::FM.new(channel: 0, voices: 6, patch: 128)   # DX7 presets: 128..255
-dev = MIDI::Device.new(fm.synth)                       # a MIDI transport
+dev = MIDI::Device.new(fm.transport)                   # a MIDI transport
 dev.trigger(60, 100, duration: 300)
 
 fm.algorithm = 5                 # 1..32

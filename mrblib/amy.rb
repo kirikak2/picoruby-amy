@@ -16,7 +16,7 @@
 # and as a MIDI transport, so it plugs into picoruby-midi like any other
 # MIDI device:
 #
-#   dev = MIDI::Device.new(AMY::Synth.instance)   # or MIDI::Device.new(fm.synth)
+#   dev = MIDI::Device.new(AMY::Transport.instance)   # or MIDI::Device.new(fm.transport)
 #   dev.note_on(60, 100)
 #   dev.trigger(64, 100, duration: 200)
 #
@@ -196,12 +196,12 @@ module AMY
   end
 
   # ==========================================================================
-  # AMY::Synth -- the engine as a picoruby-midi transport
+  # AMY::Transport -- the engine as a picoruby-midi transport
   # ==========================================================================
-  class Synth
+  class Transport
     def self.instance
-      $__amy_synth_instance__ = new if $__amy_synth_instance__.nil?
-      $__amy_synth_instance__
+      $__amy_transport_instance__ = new if $__amy_transport_instance__.nil?
+      $__amy_transport_instance__
     end
 
     def initialize
@@ -269,13 +269,13 @@ module AMY
       chorus:      [PARAM_CHORUS_LEVEL, :bus,  0.0,  1.0,  false]
     }
 
-    attr_reader :channel, :voices, :patch, :synth
+    attr_reader :channel, :voices, :patch, :transport
 
     # channel: MIDI channel, 0-based (AMY synth channel + 1)
     # voices:  polyphony
     # patch:   AMY patch number, DX7 presets are 128..255
     def initialize(channel: 0, voices: 6, patch: 128)
-      @synth = AMY::Synth.instance
+      @transport = AMY::Transport.instance
       @channel = channel
       @number = channel + 1
       @voices = voices

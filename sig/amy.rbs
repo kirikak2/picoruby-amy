@@ -45,8 +45,8 @@ module AMY
   def self._fm_state: (Integer synth) -> String?
   def self._log_scale: (Float t, Integer | Float min, Integer | Float max) -> Float
 
-  class Synth
-    def self.instance: () -> Synth
+  class Transport
+    def self.instance: () -> Transport
     def initialize: () -> void
     def transport_id: () -> Integer
     def send_packet: (Integer cable, Integer cin, Integer midi1, Integer midi2, Integer midi3) -> Integer
@@ -64,7 +64,7 @@ module AMY
     attr_reader channel: Integer
     attr_reader voices: Integer
     attr_reader patch: Integer
-    attr_reader synth: Synth
+    attr_reader transport: Transport
 
     def initialize: (?channel: Integer, ?voices: Integer, ?patch: Integer) -> void
     def synth_number: () -> Integer

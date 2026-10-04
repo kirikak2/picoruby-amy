@@ -3,7 +3,7 @@ require 'midi'
 require 'amy'
 
 fm  = AMY::FM.new(channel: 0, voices: 4, patch: 130)   # DX7 "BRASS 3"
-dev = MIDI::Device.new(fm.synth)
+dev = MIDI::Device.new(fm.transport)
 
 [60, 64, 67, 72].each do |note|
   dev.trigger(note, 100, duration: 300)
