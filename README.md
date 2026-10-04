@@ -45,10 +45,16 @@ that synth exists.
   maps 0..127 to a range.
 
 Envelopes are breakpoint lists that AMY takes whole, so each operator keeps
-its ADSR in Ruby and resends it on every change. A DX7 preset's envelopes are
-multi-stage and cannot be read back: the first ADSR change on an operator
-replaces its preset envelope with an ADSR one (defaults 10 ms / 300 ms / 0.7 /
-300 ms for the stages not given).
+its ADSR in Ruby and resends it on every change.
+
+`fm.patch = n` (and `fm.refresh`) reads the preset back from AMY, so
+`fm.algorithm`, `fm.feedback` and `fm.op(n).level / ratio / attack / decay /
+sustain / release` report the preset's values -- e.g. to move knobs there
+with `UI.knob_set(i, AMY.unscale(fm.op(1).attack, 1, 2000, log: true),
+notify: false)`. A DX7 envelope has more stages than an ADSR and is
+summarised (attack = first stage, decay = the middle stages, sustain = the
+level held, release = last stage); changing one stage then replaces the
+operator's DX7 envelope with an ADSR built from those values.
 
 ### Anything else
 

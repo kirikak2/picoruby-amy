@@ -467,6 +467,54 @@ uint32_t AMY_GEM_block_count(void)
     return s_blocks;
 }
 
+int AMY_GEM_fm_state(uint8_t synth, char *buf, size_t len)
+{
+    if (!s_running || buf == NULL || len == 0) return -1;
+    if (instrument_get_num_voices(synth, NULL) < 1) return -1;
+
+    size_t n = 0;
+    buf[0] = '\0';
+#define APPEND(...) do { \
+        if (n < len) { \
+            int w = snprintf(buf + n, len - n, __VA_ARGS__); \
+            if (w > 0) n += (size_t)w; \
+        } \
+    } while (0)
+
+    /* Under the render lock: a render (or a patch load's flush) may be
+     * changing the oscs we read. Only formatting happens inside. */
+    amy_grab_render_lock();
+    amy_event e;
+    void *state = NULL;
+    do {
+        state = yield_synth_events(synth, &e, false, state);
+        if (AMY_IS_UNSET(e.osc)) continue;               /* the preamble */
+        if (e.osc == 0) {
+            if (AMY_IS_SET(e.algorithm)) APPEND("algo %u\n", (unsigned)e.algorithm);
+            if (AMY_IS_SET(e.feedback))  APPEND("fb %.4f\n", (double)e.feedback);
+            continue;
+        }
+        if (AMY_IS_UNSET(e.amp_coefs[0])) continue;      /* not an operator */
+        APPEND("op %u %.4f %.4f ", (unsigned)e.osc, (double)e.amp_coefs[0],
+               AMY_IS_SET(e.ratio) ? (double)e.ratio : 0.0);
+        /* A breakpoint list ends where both time and value are unset; a
+         * DX7 patch leaves the first time unset, meaning 0. */
+        for (int i = 0; i < MAX_BREAKPOINTS; i++) {
+            bool has_t = AMY_IS_SET(e.eg0_times[i]);
+            bool has_v = AMY_IS_SET(e.eg0_values[i]);
+            if (!has_t && !has_v) break;
+            APPEND("%s%lu,%.4f", i ? "," : "",
+                   has_t ? (unsigned long)e.eg0_times[i] : 0UL,
+                   has_v ? (double)e.eg0_values[i] : 0.0);
+        }
+        APPEND("\n");
+    } while (state != NULL);
+    amy_release_render_lock();
+#undef APPEND
+    if (n >= len) n = len - 1;
+    return (int)n;
+}
+
 void AMY_GEM_bleep(void)
 {
     if (!s_running) return;
@@ -492,5 +540,11 @@ float AMY_GEM_render_load(void) { return 0.0f; }
 uint32_t AMY_GEM_overload_count(void) { return 0; }
 uint32_t AMY_GEM_block_count(void) { return 0; }
 void AMY_GEM_bleep(void) {}
+int AMY_GEM_fm_state(uint8_t synth, char *buf, size_t len)
+{
+    (void)synth;
+    if (buf && len) buf[0] = '\0';
+    return -1;
+}
 
 #endif /* AMY_GEM_ENABLED */

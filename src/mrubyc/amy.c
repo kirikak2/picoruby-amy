@@ -7,6 +7,7 @@
 
 #include <math.h>
 #include <mrubyc.h>
+#include <alloc.h>
 
 #include "../../include/amy_gem.h"
 
@@ -119,6 +120,54 @@ arg_float(mrbc_value *v)
     }
 }
 
+/* AMY._log_unscale(x, min, max) -> t in 0..1 with min * (max / min) ** t == x
+ * (the inverse of _log_scale, for putting a value back on a knob). */
+static void
+c_amy_log_unscale(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc != 3) {
+        SET_NIL_RETURN();
+        return;
+    }
+    float x = arg_float(&v[1]);
+    float lo = arg_float(&v[2]);
+    float hi = arg_float(&v[3]);
+    float t;
+    if (lo <= 0.0f || hi <= 0.0f || x <= 0.0f || hi == lo) {
+        t = (hi == lo) ? 0.0f : (x - lo) / (hi - lo);
+    } else {
+        t = logf(x / lo) / logf(hi / lo);
+    }
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    SET_FLOAT_RETURN(t);
+}
+
+/* AMY._fm_state(synth) -> String (see AMY_GEM_fm_state), or nil */
+static void
+c_amy_fm_state(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc != 1) {
+        SET_NIL_RETURN();
+        return;
+    }
+    static const size_t len = 1024;
+    char *buf = mrbc_raw_alloc(len);
+    if (buf == NULL) {
+        SET_NIL_RETURN();
+        return;
+    }
+    int n = AMY_GEM_fm_state((uint8_t)GET_INT_ARG(1), buf, len);
+    if (n < 0) {
+        mrbc_raw_free(buf);
+        SET_NIL_RETURN();
+        return;
+    }
+    mrbc_value str = mrbc_string_new(vm, buf, n);
+    mrbc_raw_free(buf);
+    SET_RETURN(str);
+}
+
 /* AMY._log_scale(t, min, max) -> min * (max / min) ** t
  * Exponential interpolation for AMY.scale(log: true). Done here because
  * this mruby/c build has neither Math nor Float#** (MRBC_USE_MATH = 0). */
@@ -159,4 +208,6 @@ mrbc_amy_init(mrbc_vm *vm)
     mrbc_define_method(vm, module_AMY, "_bleep",         c_amy_bleep);
     mrbc_define_method(vm, module_AMY, "_blocks",        c_amy_blocks);
     mrbc_define_method(vm, module_AMY, "_log_scale",     c_amy_log_scale);
+    mrbc_define_method(vm, module_AMY, "_log_unscale",   c_amy_log_unscale);
+    mrbc_define_method(vm, module_AMY, "_fm_state",      c_amy_fm_state);
 }

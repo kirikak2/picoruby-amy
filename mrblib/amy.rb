@@ -74,14 +74,20 @@ module AMY
     _reset
     # The reset is queued and runs on the audio task's next block, while a
     # patch load (AMY::FM.new, fm.patch =) runs right away on this task. Wait
-    # for the reset to land (two blocks), or it wipes a synth set up next.
+    # for the reset to land, or it wipes a synth set up next.
+    wait_blocks(2)
+    nil
+  end
+
+  # Wait until the audio task has rendered `n` more blocks (at most 100 ms),
+  # i.e. until everything queued so far has been applied.
+  def self.wait_blocks(n)
     start = _blocks
     waited = 0
-    while _blocks - start < 2 && waited < 100
+    while _blocks - start < n && waited < 100
       sleep_ms 2
       waited += 2
     end
-    nil
   end
 
   # Smoothed fraction of real time spent rendering (1.0 = no headroom).
@@ -160,6 +166,20 @@ module AMY
   end
 
   # --- Helpers ------------------------------------------------------------
+
+  # The inverse of scale: where `value` sits on min..max, as 0.0..127.0 --
+  # for putting a parameter read back from AMY on a knob.
+  #   UI.knob_set(5, AMY.unscale(fm.op(1).attack, 1, 2000, log: true), notify: false)
+  def self.unscale(value, min, max, log: false)
+    t = if log
+          _log_unscale(value, min, max)
+        else
+          (value - min).to_f / (max - min)
+        end
+    t = 0.0 if t < 0.0
+    t = 1.0 if t > 1.0
+    t * 127.0
+  end
 
   # Map a 0..127 controller value onto min..max (log: true for frequencies
   # and times, where equal steps should sound equal).
@@ -269,7 +289,9 @@ module AMY
     end
 
     # Load a patch. Everything set through this object since the last load
-    # is forgotten, as the patch replaces it.
+    # is replaced by the patch's own values, read back from AMY (see
+    # refresh), so algorithm, feedback and op(n).level / ratio / attack ...
+    # report the preset. Takes a couple of audio blocks (~12 ms).
     def patch=(number)
       AMY.command(synth: @number, num_voices: @voices, patch: number)
       # After the load: a patch may carry flags of its own.
@@ -278,6 +300,36 @@ module AMY
       @values = {}
       @filter = :none
       @ops.each { |_n, op| op._forget }
+      refresh
+    end
+
+    # Read the synth's FM state back from AMY: algorithm, feedback, and each
+    # operator's level, ratio and envelope. A patch's per-osc settings land
+    # on the audio task's next block, so this waits for two blocks first.
+    #
+    # A DX7 envelope has more stages than an ADSR; it is summarised as
+    # attack = the first stage's time, decay = the middle stages' times,
+    # sustain = the level held until note-off, release = the last stage's
+    # time. The operator then keeps those, so changing one stage starts the
+    # others from the preset rather than from the defaults.
+    # @return [Boolean] false if AMY has no such synth
+    def refresh
+      AMY.wait_blocks(2)
+      text = AMY._fm_state(@number)
+      return false if text.nil?
+      text.split("\n").each do |line|
+        f = line.split(" ")
+        case f[0]
+        when "algo"
+          @values[:algorithm] = f[1].to_i
+        when "fb"
+          @values[:feedback] = f[1].to_f
+        when "op"
+          n = 8 - f[1].to_i   # osc 7 is DX7 operator 1
+          op(n)._load(f[2].to_f, f[3].to_f, f[4]) if n >= 1 && n <= 6
+        end
+      end
+      true
     end
 
     # Operator n (DX7 numbering, 1..6).
@@ -448,6 +500,38 @@ module AMY
       def _forget
         @adsr = nil
         @values = {}
+      end
+
+      # Values read back from AMY by FM#refresh. ratio 0 = fixed frequency.
+      def _load(level, ratio, breakpoints)
+        @values[:level] = level
+        @values[:ratio] = ratio if ratio > 0
+        a = Operator.adsr_from(breakpoints)
+        @adsr = a unless a.nil?
+      end
+
+      # "t0,v0,t1,v1,..." (eg0 breakpoints) -> [attack, decay, sustain, release]
+      def self.adsr_from(text)
+        return nil if text.nil? || text.empty?
+        nums = []
+        text.split(",").each { |x| nums << x.to_f }
+        pairs = []
+        i = 0
+        while i + 1 < nums.size
+          pairs << [nums[i], nums[i + 1]]
+          i += 2
+        end
+        # A DX7 envelope starts with an initial point at time 0, level ~0;
+        # it is where the attack starts from, not a stage.
+        pairs.shift if pairs.size > 2 && pairs[0][0] == 0 && pairs[0][1] < 0.01
+        return nil if pairs.size < 2
+        decay = 0.0
+        j = 1
+        while j < pairs.size - 1
+          decay += pairs[j][0]
+          j += 1
+        end
+        [pairs[0][0], decay, pairs[pairs.size - 2][1], pairs[pairs.size - 1][0]]
       end
 
       # Frequency as a ratio of the note frequency.

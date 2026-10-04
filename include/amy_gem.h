@@ -17,6 +17,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -65,6 +66,16 @@ uint32_t AMY_GEM_overload_count(void);
 /* Blocks rendered and written to I2S since start (5.8 ms each at the
  * default 256 frames / 44.1 kHz). Climbing = the audio task is alive. */
 uint32_t AMY_GEM_block_count(void);
+
+/* Write the FM-relevant state of AMY synth `synth` (as a DX7 patch lays it
+ * out) into `buf` as text, one item per line:
+ *   algo <n>
+ *   fb <feedback>
+ *   op <osc> <level> <ratio> <t0>,<v0>,<t1>,<v1>,...   (eg0 breakpoints)
+ * osc is voice-relative; ratio is 0 for a fixed-frequency operator. Read
+ * from the synth's first voice. Returns the length written, or -1 when the
+ * engine is not running or the synth does not exist. */
+int AMY_GEM_fm_state(uint8_t synth, char *buf, size_t len);
 
 /* Play AMY's start-up bleep (a quick test that audio comes out). */
 void AMY_GEM_bleep(void);

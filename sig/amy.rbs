@@ -21,6 +21,8 @@ module AMY
   def self.overloads: () -> Integer
   def self.bleep: () -> nil
   def self.blocks: () -> Integer
+  def self.wait_blocks: (Integer n) -> void
+  def self.unscale: (Integer | Float value, Integer | Float min, Integer | Float max, ?log: bool) -> Float
   def self.patch_name: (Integer number) -> String
   def self.wire: (String message) -> bool
   def self.command: (**untyped params) -> bool
@@ -39,6 +41,8 @@ module AMY
   def self._overloads: () -> Integer
   def self._bleep: () -> nil
   def self._blocks: () -> Integer
+  def self._log_unscale: (Integer | Float x, Integer | Float min, Integer | Float max) -> Float
+  def self._fm_state: (Integer synth) -> String?
   def self._log_scale: (Float t, Integer | Float min, Integer | Float max) -> Float
 
   class Synth
@@ -66,6 +70,7 @@ module AMY
     def synth_number: () -> Integer
     def patch=: (Integer number) -> Integer
     def op: (Integer n) -> Operator
+    def refresh: () -> bool
     def algorithm=: (Integer n) -> Integer
     def algorithm: () -> Integer?
     def feedback=: (Float v) -> Float
@@ -95,6 +100,8 @@ module AMY
       def initialize: (FM fm, Integer number) -> void
       def osc: () -> Integer
       def _forget: () -> void
+      def _load: (Float level, Float ratio, String? breakpoints) -> void
+      def self.adsr_from: (String? text) -> Array[Float]?
       def ratio=: (Integer | Float r) -> (Integer | Float)
       def ratio: () -> (Integer | Float)?
       def level=: (Float l) -> Float
