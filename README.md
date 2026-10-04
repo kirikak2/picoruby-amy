@@ -7,7 +7,8 @@ driven like any other MIDI device.
 
 AMY (MIT, Brian Whitman and Dan Ellis) covers DX7-style FM, Juno-6 style
 analog, PCM, partials and a piano; it ships 128 DX7 and 128 Juno presets. This
-gem starts with FM: `AMY::FM` wraps the DX7 presets with named parameters.
+gem wraps two of them with named parameters: `AMY::FM` (the DX7 presets) and
+`AMY::Synth` (a subtractive synth laid out like the Juno presets).
 
 ## Usage
 
@@ -56,6 +57,50 @@ summarised (attack = first stage, decay = the middle stages, sustain = the
 level held, release = last stage); changing one stage then replaces the
 operator's DX7 envelope with an ADSR built from those values.
 
+### Subtractive synth: `AMY::Synth`
+
+Up to four oscillators summed into one filter and amplifier, one LFO, and
+two ADSR envelopes (amp, filter). The voice is laid out like AMY's Juno-60
+presets, so any of them (0..127) loads and reads back onto the same
+parameters:
+
+```ruby
+syn = AMY::Synth.new(channel: 1, voices: 6)   # plain initial voice
+syn.patch = 1                     # or start from a Juno preset ("A12 Brass Swell")
+
+syn.osc(1).wave   = :saw          # :sine :triangle :saw :saw_down :pulse :noise
+syn.osc(2).wave   = :pulse
+syn.osc(2).level  = 0.6
+syn.osc(2).octave = -1
+syn.osc(2).detune = 7             # cents
+syn.osc(2).duty   = 0.3
+
+syn.filter = :lowpass24           # :none :lowpass :bandpass :highpass :notch :phaser
+syn.cutoff = 1200                 # Hz
+syn.resonance  = 2.0
+syn.filter_env = 2.5              # octaves the filter envelope sweeps
+syn.key_track  = 0.5
+syn.filter_envelope(attack: 5, decay: 400, sustain: 0.3, release: 300)
+syn.amp_envelope(attack: 10, decay: 200, sustain: 0.7, release: 500)
+
+syn.lfo.rate    = 5.0             # Hz
+syn.lfo.vibrato = 0.02            # octaves
+syn.lfo.filter  = 1.0             # octaves
+syn.lfo.pwm     = 0.2
+
+syn.glide = 100                   # ms
+syn.echo(level: 0.3, delay: 375, feedback: 0.4)
+
+syn.map_cc(74, :cutoff)           # also :resonance :pan :glide :level :duty
+                                  # :lfo_rate :volume :reverb :chorus :echo
+dev = MIDI::Device.new(syn.transport)
+```
+
+A Juno has one envelope for both the amplifier and the filter; on
+`syn.patch =` it is copied to the filter envelope (same sound), and the two
+can then be changed apart. `syn.init_voice` goes back to the initial voice.
+`syn.refresh` reads every parameter back from AMY.
+
 ### Anything else
 
 ```ruby
@@ -63,6 +108,7 @@ AMY.command(synth: 1, osc: 0, filter_type: 1, filter_freq: 1500)  # by name
 AMY.wire("i1K130iv6Z")                                            # raw wire message
 AMY.reset                                                         # power-on state
 AMY.patch_name(130)                                               # => "BRASS 3"
+AMY.patch_name(1)                                                 # => "A12 Brass Swell"
 ```
 
 See AMY's [API reference](https://github.com/shorepine/amy/blob/main/docs/api.md)

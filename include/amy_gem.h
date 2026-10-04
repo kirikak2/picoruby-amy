@@ -77,6 +77,22 @@ uint32_t AMY_GEM_block_count(void);
  * engine is not running or the synth does not exist. */
 int AMY_GEM_fm_state(uint8_t synth, char *buf, size_t len);
 
+/* Write the whole configuration of AMY synth `synth` into `buf` as text,
+ * one line per item, for reading a patch back (AMY::Synth#refresh):
+ *   synth <num_voices> <oscs_per_voice> <synth_level>
+ *   osc <n> [w=<wave>] [p=<preset>] [a=<coefs>] [f=<coefs>] [F=<coefs>]
+ *           [d=<coefs>] [Q=<coefs>] [G=<filter_type>] [R=<resonance>]
+ *           [m=<portamento ms>] [c=<chained osc>] [L=<mod source>]
+ *           [A=<t0>,<v0>,...] [B=<t0>,<v0>,...] [T=<eg0 type>] [X=<eg1 type>]
+ *   fx V=<volume> h=<reverb 4> k=<chorus 4> M=<echo 5>
+ * Keys are AMY wire codes. Only values that differ from an osc's defaults
+ * are listed; <coefs> is the ControlCoefficient list (const, note, vel,
+ * eg0, eg1, mod0, bend, ext0, ext1, mod1) with unset slots empty and the
+ * frequency constants in Hz. Osc numbers are voice-relative, read from the
+ * synth's first voice. Returns the length written, or -1 when the engine
+ * is not running or the synth does not exist. */
+int AMY_GEM_synth_state(uint8_t synth, char *buf, size_t len);
+
 /* Play AMY's start-up bleep (a quick test that audio comes out). */
 void AMY_GEM_bleep(void);
 

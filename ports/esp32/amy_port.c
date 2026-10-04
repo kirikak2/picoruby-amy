@@ -27,6 +27,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include "../../include/amy_gem.h"
 #include "../../include/amy_gem_config.h"
 
@@ -234,7 +235,10 @@ static amy_config_t make_config(void)
     c.features.default_synths = 0;        /* scripts set up their own synths */
     c.features.startup_bleep = 0;
     c.features.audio_in = 0;
-    c.features.echo = 0;                  /* a few hundred KB of delay line */
+    /* Echo: its delay line (~512 KB at the default 743 ms maximum) is
+     * allocated -- in PSRAM, see ram_caps_delay -- only when a script
+     * first turns the echo level above 0. */
+    c.features.echo = 1;
 
     c.overload_threshold = AMY_GEM_OVERLOAD_THRESHOLD;
     c.amy_external_overload_hook = overload_hook;
@@ -515,6 +519,129 @@ int AMY_GEM_fm_state(uint8_t synth, char *buf, size_t len)
     return (int)n;
 }
 
+/* ---- AMY_GEM_synth_state: begin (host-tested; keep self-contained) ---- */
+typedef struct {
+    char *buf;
+    size_t len;
+    size_t n;
+} state_out_t;
+
+static void out(state_out_t *o, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+
+static void out(state_out_t *o, const char *fmt, ...)
+{
+    if (o->n >= o->len) return;
+    va_list ap;
+    va_start(ap, fmt);
+    int w = vsnprintf(o->buf + o->n, o->len - o->n, fmt, ap);
+    va_end(ap);
+    if (w > 0) o->n += (size_t)w;
+}
+
+/* " key=c0,c1,..." for a ControlCoefficient list; unset slots are left
+ * empty and trailing ones dropped. Nothing when every slot is unset. */
+static void out_coefs(state_out_t *o, const char *key, const float *c)
+{
+    int last = -1;
+    for (int i = 0; i < NUM_COMBO_COEFS; i++) {
+        if (AMY_IS_SET(c[i])) last = i;
+    }
+    if (last < 0) return;
+    out(o, " %s=", key);
+    for (int i = 0; i <= last; i++) {
+        if (i) out(o, ",");
+        if (AMY_IS_SET(c[i])) out(o, "%.6g", (double)c[i]);
+    }
+}
+
+/* " key=t0,v0,t1,v1,..." for a breakpoint set. AMY reports only the
+ * entries that differ from an osc's defaults, so the defaults are put back
+ * here: every time defaults to 0, and eg0 defaults to the key gate
+ * (0,1.0,0,0) -- an eg0 attack to 1.0 reads back with that value unset.
+ * The list ends at the first entry with neither time nor value (past
+ * eg0's two default entries). Nothing when the set is all defaults. */
+static void out_bps(state_out_t *o, const char *key,
+                    const uint32_t *t, const float *v, bool eg0)
+{
+    int count = 0;
+    for (int i = 0; i < MAX_BREAKPOINTS; i++) {
+        if (AMY_IS_UNSET(t[i]) && AMY_IS_UNSET(v[i])) {
+            if (eg0 && i < 2) continue;
+            break;
+        }
+        count = i + 1;
+    }
+    if (count == 0) return;
+    if (eg0 && count < 2) count = 2;
+    out(o, " %s=", key);
+    for (int i = 0; i < count; i++) {
+        float dv = (eg0 && i == 0) ? 1.0f : 0.0f;
+        out(o, "%s%lu,%.4f", i ? "," : "",
+            AMY_IS_SET(t[i]) ? (unsigned long)t[i] : 0UL,
+            AMY_IS_SET(v[i]) ? (double)v[i] : (double)dv);
+    }
+}
+
+static int synth_state_locked(uint8_t synth, char *buf, size_t len)
+{
+    state_out_t o = { buf, len, 0 };
+    buf[0] = '\0';
+    amy_event e;
+    void *state = NULL;
+    do {
+        state = yield_synth_events(synth, &e, true, state);
+        if (AMY_IS_SET(e.num_voices)) {                   /* the preamble */
+            out(&o, "synth %u %u %.4f\n", (unsigned)e.num_voices,
+                (unsigned)e.oscs_per_voice,
+                AMY_IS_SET(e.synth_level) ? (double)e.synth_level : 1.0);
+        } else if (AMY_IS_SET(e.osc)) {
+            out(&o, "osc %u", (unsigned)e.osc);
+            if (AMY_IS_SET(e.wave))   out(&o, " w=%u", (unsigned)e.wave);
+            if (AMY_IS_SET(e.preset)) out(&o, " p=%d", (int)e.preset);
+            out_coefs(&o, "a", e.amp_coefs);
+            out_coefs(&o, "f", e.freq_coefs);
+            out_coefs(&o, "F", e.filter_freq_coefs);
+            out_coefs(&o, "d", e.duty_coefs);
+            out_coefs(&o, "Q", e.pan_coefs);
+            if (AMY_IS_SET(e.filter_type)) out(&o, " G=%u", (unsigned)e.filter_type);
+            if (AMY_IS_SET(e.resonance))   out(&o, " R=%.4f", (double)e.resonance);
+            if (AMY_IS_SET(e.portamento_ms)) out(&o, " m=%u", (unsigned)e.portamento_ms);
+            if (AMY_IS_SET(e.chained_osc)) out(&o, " c=%u", (unsigned)e.chained_osc);
+            if (AMY_IS_SET(e.mod_source[0])) out(&o, " L=%u", (unsigned)e.mod_source[0]);
+            out_bps(&o, "A", e.eg0_times, e.eg0_values, true);
+            out_bps(&o, "B", e.eg1_times, e.eg1_values, false);
+            if (AMY_IS_SET(e.eg_type[0])) out(&o, " T=%u", (unsigned)e.eg_type[0]);
+            if (AMY_IS_SET(e.eg_type[1])) out(&o, " X=%u", (unsigned)e.eg_type[1]);
+            out(&o, "\n");
+        } else if (AMY_IS_SET(e.reverb_level)) {          /* the bus effects */
+            out(&o, "fx V=%.4f h=%.4f,%.4f,%.4f,%.1f k=%.4f,%.1f,%.4f,%.4f"
+                " M=%.4f,%.1f,%.1f,%.4f,%.4f\n",
+                AMY_IS_SET(e.volume) ? (double)e.volume : 1.0,
+                (double)e.reverb_level, (double)e.reverb_liveness,
+                (double)e.reverb_damping, (double)e.reverb_xover_hz,
+                (double)e.chorus_level, (double)e.chorus_max_delay,
+                (double)e.chorus_lfo_freq, (double)e.chorus_depth,
+                (double)e.echo_level, (double)e.echo_delay_ms,
+                AMY_IS_SET(e.echo_max_delay_ms) ? (double)e.echo_max_delay_ms : 0.0,
+                (double)e.echo_feedback, (double)e.echo_filter_coef);
+        }
+    } while (state != NULL);
+    if (o.n >= len) o.n = len - 1;
+    return (int)o.n;
+}
+/* ---- AMY_GEM_synth_state: end ---- */
+
+int AMY_GEM_synth_state(uint8_t synth, char *buf, size_t len)
+{
+    if (!s_running || buf == NULL || len == 0) return -1;
+    if (instrument_get_num_voices(synth, NULL) < 1) return -1;
+    amy_grab_render_lock();
+    int n = synth_state_locked(synth, buf, len);
+    amy_release_render_lock();
+    return n;
+}
+
 void AMY_GEM_bleep(void)
 {
     if (!s_running) return;
@@ -540,6 +667,12 @@ float AMY_GEM_render_load(void) { return 0.0f; }
 uint32_t AMY_GEM_overload_count(void) { return 0; }
 uint32_t AMY_GEM_block_count(void) { return 0; }
 void AMY_GEM_bleep(void) {}
+int AMY_GEM_synth_state(uint8_t synth, char *buf, size_t len)
+{
+    (void)synth;
+    if (buf && len) buf[0] = '\0';
+    return -1;
+}
 int AMY_GEM_fm_state(uint8_t synth, char *buf, size_t len)
 {
     (void)synth;

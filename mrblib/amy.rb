@@ -33,20 +33,23 @@ module AMY
     feedback: "b", algorithm: "o", algo_source: "O", ratio: "I",
     filter_type: "G", filter_freq: "F", resonance: "R",
     pan: "Q", portamento: "m", duty: "d", phase: "P", preset: "p",
-    mod_source: "L", bus: "y",
+    mod_source: "L", chained_osc: "c", bus: "y",
     volume: "V", reverb: "h", chorus: "k", echo: "M", eq: "x",
     reset: "S"
   }
 
   # AMY's PARAM_* numbers (amy/constants.py) for the direct form of midi_cc.
   PARAM_AMP          = 3
+  PARAM_DUTY         = 13
   PARAM_FEEDBACK     = 23
+  PARAM_FREQ         = 24
   PARAM_PAN          = 38
   PARAM_FILTER_FREQ  = 48
   PARAM_RATIO        = 58
   PARAM_RESONANCE    = 59
   PARAM_PORTAMENTO   = 60
   PARAM_VOLUME       = 71
+  PARAM_ECHO_LEVEL   = 210
   PARAM_CHORUS_LEVEL = 215
   PARAM_REVERB_LEVEL = 219
 

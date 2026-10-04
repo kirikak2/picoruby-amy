@@ -168,6 +168,31 @@ c_amy_fm_state(mrbc_vm *vm, mrbc_value v[], int argc)
     SET_RETURN(str);
 }
 
+/* AMY._synth_state(synth) -> String (see AMY_GEM_synth_state), or nil */
+static void
+c_amy_synth_state(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc != 1) {
+        SET_NIL_RETURN();
+        return;
+    }
+    static const size_t len = 2048;
+    char *buf = mrbc_raw_alloc(len);
+    if (buf == NULL) {
+        SET_NIL_RETURN();
+        return;
+    }
+    int n = AMY_GEM_synth_state((uint8_t)GET_INT_ARG(1), buf, len);
+    if (n < 0) {
+        mrbc_raw_free(buf);
+        SET_NIL_RETURN();
+        return;
+    }
+    mrbc_value str = mrbc_string_new(vm, buf, n);
+    mrbc_raw_free(buf);
+    SET_RETURN(str);
+}
+
 /* AMY._log_scale(t, min, max) -> min * (max / min) ** t
  * Exponential interpolation for AMY.scale(log: true). Done here because
  * this mruby/c build has neither Math nor Float#** (MRBC_USE_MATH = 0). */
@@ -210,4 +235,5 @@ mrbc_amy_init(mrbc_vm *vm)
     mrbc_define_method(vm, module_AMY, "_log_scale",     c_amy_log_scale);
     mrbc_define_method(vm, module_AMY, "_log_unscale",   c_amy_log_unscale);
     mrbc_define_method(vm, module_AMY, "_fm_state",      c_amy_fm_state);
+    mrbc_define_method(vm, module_AMY, "_synth_state",   c_amy_synth_state);
 }

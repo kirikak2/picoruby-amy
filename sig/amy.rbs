@@ -1,18 +1,22 @@
 module AMY
   WIRE: Hash[Symbol, String]
   PARAM_AMP: Integer
+  PARAM_DUTY: Integer
   PARAM_FEEDBACK: Integer
+  PARAM_FREQ: Integer
   PARAM_PAN: Integer
   PARAM_FILTER_FREQ: Integer
   PARAM_RATIO: Integer
   PARAM_RESONANCE: Integer
   PARAM_PORTAMENTO: Integer
   PARAM_VOLUME: Integer
+  PARAM_ECHO_LEVEL: Integer
   PARAM_CHORUS_LEVEL: Integer
   PARAM_REVERB_LEVEL: Integer
   SYNTH_FLAGS_NO_NOTE_WARNINGS: Integer
   DX7_FIRST_PATCH: Integer
   DX7_PATCH_NAMES: Array[String]
+  JUNO_PATCH_NAMES: Array[String]
 
   def self.start: () -> bool
   def self.running?: () -> bool
@@ -43,6 +47,7 @@ module AMY
   def self._blocks: () -> Integer
   def self._log_unscale: (Integer | Float x, Integer | Float min, Integer | Float max) -> Float
   def self._fm_state: (Integer synth) -> String?
+  def self._synth_state: (Integer synth) -> String?
   def self._log_scale: (Float t, Integer | Float min, Integer | Float max) -> Float
 
   class Transport
@@ -117,6 +122,155 @@ module AMY
       def envelope: (?attack: (Integer | Float)?, ?decay: (Integer | Float)?, ?sustain: Float?, ?release: (Integer | Float)?) -> bool
       def set: (Symbol param, untyped value) -> untyped
       def get: (Symbol param) -> untyped
+    end
+  end
+
+  class Synth
+    HEAD: Integer
+    LFO_OSC: Integer
+    FIRST_OSC: Integer
+    MAX_OSCS: Integer
+    OSCS_PER_VOICE: Integer
+    WAVE_SILENT: Integer
+    WAVES: Hash[Symbol, Integer]
+    WAVE_LIST: Array[Symbol]
+    FILTER_TYPES: Hash[Symbol, Integer]
+    FILTER_LIST: Array[Symbol]
+    LFO_WAVE_LIST: Array[Symbol]
+    DEFAULT_AMP_ADSR: Array[Integer | Float]
+    DEFAULT_FILTER_ADSR: Array[Integer | Float]
+    BASE_FREQ: Float
+    FREQ_SPAN_OCT: Float
+    C_CONST: Integer
+    C_NOTE: Integer
+    C_VEL: Integer
+    C_EG0: Integer
+    C_EG1: Integer
+    C_MOD0: Integer
+    C_BEND: Integer
+    CC_TARGETS: Hash[Symbol, Array[untyped]]
+
+    attr_reader channel: Integer
+    attr_reader voices: Integer
+    attr_reader patch: Integer?
+    attr_reader transport: Transport
+    attr_reader lfo: LFO
+
+    def initialize: (?channel: Integer, ?voices: Integer, ?patch: Integer?) -> void
+    def synth_number: () -> Integer
+    def osc: (Integer n) -> Oscillator
+    def oscs: () -> Array[Oscillator]
+    def init_voice: () -> self
+    def patch=: (Integer number) -> Integer
+    def patch_name: () -> String?
+    def refresh: () -> bool
+
+    def filter=: (Symbol type) -> Symbol
+    def cutoff=: (Integer | Float hz) -> (Integer | Float)
+    def resonance=: (Float q) -> Float
+    def filter_env=: (Float octaves) -> Float
+    def key_track=: (Float amount) -> Float
+    def velocity=: (Float v) -> Float
+    def pan=: (Float v) -> Float
+    def volume=: (Float v) -> Float
+    def glide=: (Integer | Float ms) -> (Integer | Float)
+    def amp_envelope: (?attack: (Integer | Float)?, ?decay: (Integer | Float)?, ?sustain: Float?, ?release: (Integer | Float)?) -> bool
+    def filter_envelope: (?attack: (Integer | Float)?, ?decay: (Integer | Float)?, ?sustain: Float?, ?release: (Integer | Float)?) -> bool
+    def amp_attack=: (Integer | Float ms) -> (Integer | Float)
+    def amp_decay=: (Integer | Float ms) -> (Integer | Float)
+    def amp_sustain=: (Float v) -> Float
+    def amp_release=: (Integer | Float ms) -> (Integer | Float)
+    def filter_attack=: (Integer | Float ms) -> (Integer | Float)
+    def filter_decay=: (Integer | Float ms) -> (Integer | Float)
+    def filter_sustain=: (Float v) -> Float
+    def filter_release=: (Integer | Float ms) -> (Integer | Float)
+    def amp_attack: () -> (Integer | Float)
+    def amp_decay: () -> (Integer | Float)
+    def amp_sustain: () -> (Integer | Float)
+    def amp_release: () -> (Integer | Float)
+    def filter_attack: () -> (Integer | Float)
+    def filter_decay: () -> (Integer | Float)
+    def filter_sustain: () -> (Integer | Float)
+    def filter_release: () -> (Integer | Float)
+    def reverb=: (Float v) -> Float
+    def chorus=: (Float v) -> Float
+    def echo: (?level: Float?, ?delay: (Integer | Float)?, ?feedback: Float?) -> nil
+    def echo_level=: (Float v) -> Float
+    def echo_delay=: (Integer | Float ms) -> (Integer | Float)
+    def echo_feedback=: (Float v) -> Float
+    def filter: () -> Symbol
+    def cutoff: () -> (Integer | Float)
+    def resonance: () -> Float
+    def filter_env: () -> Float
+    def key_track: () -> Float
+    def velocity: () -> Float
+    def pan: () -> Float
+    def volume: () -> Float
+    def glide: () -> (Integer | Float)
+    def reverb: () -> Float?
+    def chorus: () -> Float?
+    def echo_level: () -> Float?
+    def echo_delay: () -> (Integer | Float)?
+    def echo_feedback: () -> Float?
+    def set: (Symbol param, untyped value, ?osc: Integer?, ?lfo: bool) -> untyped
+    def get: (Symbol param, ?osc: Integer?, ?lfo: bool) -> untyped
+    def map_cc: (Integer cc, Symbol param, ?min: (Integer | Float)?, ?max: (Integer | Float)?, ?log: bool?, ?osc: Integer?) -> bool
+    def unmap_cc: (?Integer? cc) -> bool
+
+    def osc_command: (Integer osc, Symbol key, untyped value) -> bool
+    def head_command: (Symbol key, untyped value) -> bool
+    def head: (Hash[Symbol, untyped] params) -> bool
+    def self.fields: (Array[String] words, Integer from) -> Hash[String, String]
+    def self.coef: (String? list, Integer i, Float default) -> Float
+    def self.merge_adsr: (Array[Integer | Float] adsr, untyped attack, untyped decay, untyped sustain, untyped release) -> Array[Integer | Float]
+    def self.adsr_bps: (Array[Integer | Float] a) -> Array[Integer | Float]
+    def self.octaves_to_freq: (Float oct) -> Float
+    def self.freq_to_octaves: (Integer | Float hz) -> Float
+    def self.round: (Float x) -> Integer
+
+    class Oscillator
+      attr_reader number: Integer
+
+      def initialize: (Synth synth, Integer number) -> void
+      def osc: () -> Integer
+      def wave=: (Symbol | Integer w) -> (Symbol | Integer)
+      def level=: (Float l) -> Float
+      def octave=: (Integer n) -> Integer
+      def detune=: (Integer | Float cents) -> (Integer | Float)
+      def duty=: (Float d) -> Float
+      def preset=: (Integer n) -> Integer
+      def wave: () -> (Symbol | Integer)
+      def level: () -> Float
+      def octave: () -> Integer
+      def detune: () -> (Integer | Float)
+      def duty: () -> Float
+      def glide_ms: () -> Integer
+      def set: (Symbol param, untyped value) -> untyped
+      def get: (Symbol param) -> untyped
+      def self.wave_name: (Integer code) -> (Symbol | Integer)
+      def _command: (Symbol key, untyped value) -> bool
+      def _init: (Symbol wave, Float level, Integer octave, Integer? chained) -> bool
+      def _load: (Hash[String, String] h) -> void
+    end
+
+    class LFO
+      def initialize: (Synth synth) -> void
+      def wave=: (Symbol | Integer w) -> (Symbol | Integer)
+      def rate=: (Integer | Float hz) -> (Integer | Float)
+      def vibrato=: (Float octaves) -> Float
+      def filter=: (Float octaves) -> Float
+      def tremolo=: (Float amount) -> Float
+      def pwm=: (Float amount) -> Float
+      def wave: () -> (Symbol | Integer)
+      def rate: () -> (Integer | Float)
+      def vibrato: () -> Float
+      def filter: () -> Float
+      def tremolo: () -> Float
+      def pwm: () -> Float
+      def set: (Symbol param, untyped value) -> untyped
+      def get: (Symbol param) -> untyped
+      def _init: () -> bool
+      def _load: (Hash[String, String] lfo, Hash[String, String] first, Hash[String, String] head) -> void
     end
   end
 end
