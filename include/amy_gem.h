@@ -93,6 +93,13 @@ int AMY_GEM_fm_state(uint8_t synth, char *buf, size_t len);
  * is not running or the synth does not exist. */
 int AMY_GEM_synth_state(uint8_t synth, char *buf, size_t len);
 
+/* Scale everything written to I2S by `gain` (0.0 .. 1.0, default 1.0).
+ * A master volume for boards whose amplifier has no volume control of its
+ * own; a board with a codec should set the volume there instead. Safe from
+ * any task, and may be set before AMY_GEM_start(). */
+void AMY_GEM_set_output_gain(float gain);
+float AMY_GEM_output_gain(void);
+
 /* Play AMY's start-up bleep (a quick test that audio comes out). */
 void AMY_GEM_bleep(void);
 

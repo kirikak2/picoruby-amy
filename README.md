@@ -146,6 +146,16 @@ AMY_GEM_set_power_callback(power, NULL);   // before AMY starts
 
 The callback runs on the audio task once the I2S clocks run.
 
+A board whose amplifier has no volume control of its own can scale the output
+instead (0.0 .. 1.0, applied to every block on its way to I2S, settable from
+any task and before AMY starts):
+
+```c
+AMY_GEM_set_output_gain(0.5f);
+```
+
+A board with a codec should set the volume on the codec instead.
+
 `trigger` and the note scheduler reach AMY through picoruby-midi's transport
 registry (`MIDI_transport_register`), which this gem joins when it starts.
 

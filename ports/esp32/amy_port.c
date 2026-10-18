@@ -60,6 +60,9 @@ static volatile bool s_start_failed = false;
 static volatile uint32_t s_overloads = 0;
 static volatile esp_err_t s_i2s_err = ESP_OK;
 static volatile uint32_t s_blocks = 0;     /* blocks rendered: proof of life */
+/* Output gain in Q15 (32768 = unity), applied to every block on its way to
+ * I2S. For boards with no codec to set a volume on. */
+static volatile int32_t s_gain_q15 = 32768;
 static uint8_t s_transport_bit = 0;
 
 /* How far the audio task got in starting up, for the timeout message in
@@ -87,6 +90,16 @@ static const char *const s_step_names[] = {
 static size_t write_samples(const uint8_t *buffer, size_t nbytes)
 {
     size_t written = 0;
+    /* The block is AMY's own render buffer (amy_update() casts it to
+     * uint8_t *), so it can be scaled in place. */
+    int32_t gain = s_gain_q15;
+    if (gain != 32768) {
+        int16_t *s = (int16_t *)buffer;
+        size_t n = nbytes / sizeof(int16_t);
+        for (size_t i = 0; i < n; i++) {
+            s[i] = (int16_t)((s[i] * gain) >> 15);
+        }
+    }
     /* Blocks until the DMA ring has room: this is what paces the task. */
     i2s_channel_write(s_tx, buffer, nbytes, &written, portMAX_DELAY);
     return written;
@@ -642,6 +655,18 @@ int AMY_GEM_synth_state(uint8_t synth, char *buf, size_t len)
     return n;
 }
 
+void AMY_GEM_set_output_gain(float gain)
+{
+    if (gain < 0.0f) gain = 0.0f;
+    if (gain > 1.0f) gain = 1.0f;
+    s_gain_q15 = (int32_t)(gain * 32768.0f + 0.5f);
+}
+
+float AMY_GEM_output_gain(void)
+{
+    return s_gain_q15 / 32768.0f;
+}
+
 void AMY_GEM_bleep(void)
 {
     if (!s_running) return;
@@ -667,6 +692,8 @@ float AMY_GEM_render_load(void) { return 0.0f; }
 uint32_t AMY_GEM_overload_count(void) { return 0; }
 uint32_t AMY_GEM_block_count(void) { return 0; }
 void AMY_GEM_bleep(void) {}
+void AMY_GEM_set_output_gain(float gain) { (void)gain; }
+float AMY_GEM_output_gain(void) { return 1.0f; }
 int AMY_GEM_synth_state(uint8_t synth, char *buf, size_t len)
 {
     (void)synth;
