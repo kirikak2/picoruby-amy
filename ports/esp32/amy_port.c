@@ -44,7 +44,11 @@
 #if CONFIG_IDF_TARGET_ESP32P4
 #include "hal/usb_serial_jtag_ll.h"
 #include "hal/usb_wrap_ll.h"
-#include "soc/io_mux_reg.h"     /* USB_INT_PHY0/1_DM/DP_GPIO_NUM */
+#include "soc/io_mux_reg.h"     /* USB_INT_PHY0/1_DM/DP_GPIO_NUM, PIN_FUNC_GPIO */
+#include "soc/io_mux_struct.h"  /* IO_MUX */
+#include "soc/lp_system_struct.h"
+#include "soc/i2s_periph.h"     /* i2s_periph_signal */
+#include "esp_rom_gpio.h"
 #endif
 
 static const char *TAG = "AMY";
@@ -82,6 +86,99 @@ static const char *const s_step_names[] = {
 };
 
 #define AMY_START_TIMEOUT_MS 5000
+
+#if CONFIG_IDF_TARGET_ESP32P4
+/* ---------------------------------------------------------------------
+ * ESP32-P4: I2S pins on the USB PHY pads
+ *
+ * GPIO 24/25 and 26/27 are the pads of the P4's two internal full-speed USB
+ * PHYs. Routing a pad to another function goes through gpio_ll_func_sel(),
+ * which also switches the USB pads off -- assuming the default mux, PHY0 ->
+ * USB-Serial/JTAG and PHY1 -> USB OTG1.1: GPIO 26/27 clear the OTG's pad
+ * enable, 24/25 the USJ's. A board that swapped the mux (Tab5 in
+ * midi_device mode: OTG1.1 on PHY0 behind its USB-C connector, see
+ * picoruby-usb_midi_device) gets the wrong controller cut: I2S on 26/27
+ * would switch off the OTG -- the live TinyUSB CDC console and USB-MIDI
+ * device -- while USJ, which really owns PHY1, keeps the pads in USB mode
+ * underneath the I2S signals.
+ *
+ * Putting the pad back afterwards is not enough: for as long as the I2S
+ * channel takes to set up, D+ loses its pull-up, the host sees the device
+ * leave, and it did not come back until the cable was replugged (seen on
+ * the Tab5, 2026-10-25). So I2S pins on USB pads never go through
+ * gpio_func_sel(): the driver gets them as unused, and route_pins() does
+ * what it would have done (IO_MUX to GPIO, then the GPIO matrix) without
+ * touching a pad enable. Then the controller the current mux actually puts
+ * on those pads -- and only that one -- is switched off (usb_pads_fixup()),
+ * before the I2S signals reach them.
+ * --------------------------------------------------------------------- */
+
+static bool pin_on_pads(int pin, int dm, int dp)
+{
+    return pin == dm || pin == dp;
+}
+
+static bool on_usb_pads(int pin)
+{
+    return pin_on_pads(pin, USB_INT_PHY0_DM_GPIO_NUM, USB_INT_PHY0_DP_GPIO_NUM)
+        || pin_on_pads(pin, USB_INT_PHY1_DM_GPIO_NUM, USB_INT_PHY1_DP_GPIO_NUM);
+}
+
+static bool i2s_uses_phy(int dm, int dp)
+{
+    return pin_on_pads(AMY_GEM_I2S_BCLK, dm, dp) || pin_on_pads(AMY_GEM_I2S_WS, dm, dp)
+        || pin_on_pads(AMY_GEM_I2S_DOUT, dm, dp) || pin_on_pads(AMY_GEM_I2S_MCLK, dm, dp);
+}
+
+/* Switch off the controller whose PHY the I2S pins take, as the mux is now */
+static void usb_pads_fixup(void)
+{
+    bool on_phy0 = i2s_uses_phy(USB_INT_PHY0_DM_GPIO_NUM, USB_INT_PHY0_DP_GPIO_NUM);
+    bool on_phy1 = i2s_uses_phy(USB_INT_PHY1_DM_GPIO_NUM, USB_INT_PHY1_DP_GPIO_NUM);
+    if (!on_phy0 && !on_phy1) return;
+
+    /* sw_usb_phy_sel (with sw_hw_usb_phy_sel): USJ -> PHY1, OTG1.1 -> PHY0 */
+    bool swapped = LP_SYS.usb_ctrl.sw_hw_usb_phy_sel && LP_SYS.usb_ctrl.sw_usb_phy_sel;
+    if (on_phy0) {
+        if (swapped) usb_wrap_ll_phy_enable_pad(&USB_WRAP, false); else usb_serial_jtag_ll_phy_enable_pad(false);
+    }
+    if (on_phy1) {
+        if (swapped) usb_serial_jtag_ll_phy_enable_pad(false); else usb_wrap_ll_phy_enable_pad(&USB_WRAP, false);
+    }
+}
+
+/* A pin for the I2S driver: unused if it is on a USB pad (route_pins()) */
+static gpio_num_t driver_pin(int pin)
+{
+    return (pin < 0 || on_usb_pads(pin)) ? I2S_GPIO_UNUSED : (gpio_num_t)pin;
+}
+
+/* i2s_gpio_check_and_set() for an output, without its gpio_func_sel() */
+static void route_out(int pin, uint32_t signal)
+{
+    if (pin < 0 || !on_usb_pads(pin)) return;
+    IO_MUX.gpio[pin].mcu_sel = PIN_FUNC_GPIO;
+    esp_rom_gpio_connect_out_signal(pin, signal, false, false);
+}
+
+/* The pins the driver was not given, as it would have routed them (master TX) */
+static void route_pins(void)
+{
+    i2s_chan_info_t info;
+    if (i2s_channel_get_info(s_tx, &info) != ESP_OK) return;
+    const i2s_signal_conn_t *sig = &i2s_periph_signal[info.id];
+    usb_pads_fixup();
+    route_out(AMY_GEM_I2S_BCLK, sig->m_tx_bck_sig);
+    route_out(AMY_GEM_I2S_WS, sig->m_tx_ws_sig);
+    route_out(AMY_GEM_I2S_DOUT, sig->data_out_sig);
+    route_out(AMY_GEM_I2S_MCLK, sig->mck_out_sig);
+}
+#else
+static gpio_num_t driver_pin(int pin)
+{
+    return pin < 0 ? I2S_GPIO_UNUSED : (gpio_num_t)pin;
+}
+#endif /* CONFIG_IDF_TARGET_ESP32P4 */
 
 /* ---------------------------------------------------------------------
  * I2S
@@ -131,10 +228,10 @@ static esp_err_t i2s_setup(void)
                                                     I2S_SLOT_MODE_STEREO),
 #endif
         .gpio_cfg = {
-            .mclk = (AMY_GEM_I2S_MCLK < 0) ? I2S_GPIO_UNUSED : (gpio_num_t)AMY_GEM_I2S_MCLK,
-            .bclk = (gpio_num_t)AMY_GEM_I2S_BCLK,
-            .ws   = (gpio_num_t)AMY_GEM_I2S_WS,
-            .dout = (gpio_num_t)AMY_GEM_I2S_DOUT,
+            .mclk = driver_pin(AMY_GEM_I2S_MCLK),
+            .bclk = driver_pin(AMY_GEM_I2S_BCLK),
+            .ws   = driver_pin(AMY_GEM_I2S_WS),
+            .dout = driver_pin(AMY_GEM_I2S_DOUT),
             .din  = I2S_GPIO_UNUSED,
             .invert_flags = {
                 .mclk_inv = false,
@@ -146,6 +243,9 @@ static esp_err_t i2s_setup(void)
     std_cfg.clk_cfg.mclk_multiple = (i2s_mclk_multiple_t)AMY_GEM_MCLK_MULTIPLE;
 
     err = i2s_channel_init_std_mode(s_tx, &std_cfg);
+#if CONFIG_IDF_TARGET_ESP32P4
+    if (err == ESP_OK) route_pins();
+#endif
     if (err == ESP_OK) err = i2s_channel_enable(s_tx);
     if (err != ESP_OK) {
         i2s_del_channel(s_tx);
@@ -153,73 +253,6 @@ static esp_err_t i2s_setup(void)
     }
     return err;
 }
-
-#if CONFIG_IDF_TARGET_ESP32P4
-/* ---------------------------------------------------------------------
- * ESP32-P4: I2S pins on the USB PHY pads
- *
- * GPIO 24/25 and 26/27 are the pads of the P4's two internal full-speed USB
- * PHYs. Routing a pad to another function goes through gpio_ll_func_sel(),
- * which also switches the USB pads off -- assuming the default mux, PHY0 ->
- * USB-Serial/JTAG and PHY1 -> USB OTG1.1: GPIO 26/27 clear the OTG's pad
- * enable, 24/25 the USJ's. A board that swapped the mux (Tab5 in
- * midi_device mode: OTG1.1 on PHY0 behind its USB-C connector, see
- * picoruby-usb_midi_device) gets the wrong controller cut: I2S on 26/27
- * switched off the OTG -- the live TinyUSB CDC console and USB-MIDI device
- * dropped -- while USJ, which really owns PHY1, kept the pads in USB mode
- * underneath the I2S signals.
- *
- * Take a snapshot of both pad enables before the I2S pins are routed, put
- * them back afterwards, and then switch off only the controller that the
- * current mux actually puts on the pads I2S took.
- * --------------------------------------------------------------------- */
-
-static bool pin_on_pads(int pin, int dm, int dp)
-{
-    return pin == dm || pin == dp;
-}
-
-static bool i2s_uses_phy(int dm, int dp)
-{
-    return pin_on_pads(AMY_GEM_I2S_BCLK, dm, dp) || pin_on_pads(AMY_GEM_I2S_WS, dm, dp)
-        || pin_on_pads(AMY_GEM_I2S_DOUT, dm, dp) || pin_on_pads(AMY_GEM_I2S_MCLK, dm, dp);
-}
-
-typedef struct {
-    bool otg_pad;
-    bool usj_pad;
-} usb_pads_t;
-
-static usb_pads_t usb_pads_save(void)
-{
-    usb_pads_t p = {
-        .otg_pad = usb_wrap_ll_phy_is_pad_enabled(&USB_WRAP),
-        .usj_pad = usb_serial_jtag_ll_phy_is_pad_enabled(),
-    };
-    return p;
-}
-
-static void p4_usb_pads_fixup(usb_pads_t before)
-{
-    bool on_phy0 = i2s_uses_phy(USB_INT_PHY0_DM_GPIO_NUM, USB_INT_PHY0_DP_GPIO_NUM);
-    bool on_phy1 = i2s_uses_phy(USB_INT_PHY1_DM_GPIO_NUM, USB_INT_PHY1_DP_GPIO_NUM);
-    if (!on_phy0 && !on_phy1) return;
-
-    /* sw_usb_phy_sel (with sw_hw_usb_phy_sel): USJ -> PHY1, OTG1.1 -> PHY0 */
-    bool swapped = LP_SYS.usb_ctrl.sw_hw_usb_phy_sel && LP_SYS.usb_ctrl.sw_usb_phy_sel;
-
-    bool otg_pad = before.otg_pad;
-    bool usj_pad = before.usj_pad;
-    if (on_phy0) {
-        if (swapped) otg_pad = false; else usj_pad = false;
-    }
-    if (on_phy1) {
-        if (swapped) usj_pad = false; else otg_pad = false;
-    }
-    usb_wrap_ll_phy_enable_pad(&USB_WRAP, otg_pad);
-    usb_serial_jtag_ll_phy_enable_pad(usj_pad);
-}
-#endif /* CONFIG_IDF_TARGET_ESP32P4 */
 
 /* ---------------------------------------------------------------------
  * Audio task
@@ -283,13 +316,7 @@ static void audio_task(void *arg)
         stderr = null_out;
     }
 
-#if CONFIG_IDF_TARGET_ESP32P4
-    usb_pads_t pads_before = usb_pads_save();
-#endif
     esp_err_t err = i2s_setup();
-#if CONFIG_IDF_TARGET_ESP32P4
-    p4_usb_pads_fixup(pads_before);
-#endif
     if (err != ESP_OK) {
         s_i2s_err = err;
         s_start_failed = true;
