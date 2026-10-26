@@ -73,4 +73,12 @@
 #  define AMY_GEM_OVERLOAD_THRESHOLD 0.7f
 #endif
 
+/* The reverb's delay lines (~110 KB) go to internal RAM when at least this
+ * much internal RAM is free as AMY starts, otherwise to PSRAM. In PSRAM
+ * they are much slower (cache misses every sample). A huge value keeps
+ * them in PSRAM. */
+#ifndef AMY_GEM_REVERB_INTERNAL_MIN_FREE
+#  define AMY_GEM_REVERB_INTERNAL_MIN_FREE (192 * 1024)
+#endif
+
 #endif /* AMY_GEM_CONFIG_H_ */

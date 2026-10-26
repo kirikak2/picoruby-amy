@@ -41,6 +41,7 @@
 #include "esp_log.h"
 #include "esp_cpu.h"
 #include "esp_rom_sys.h"
+#include "esp_memory_utils.h"
 #include "amy.h"
 #include "midi_transport.h"   /* picoruby-midi: transport registry */
 #if CONFIG_IDF_TARGET_ESP32P4
@@ -107,6 +108,7 @@ static const char *const s_step_names[] = {
  * --------------------------------------------------------------------- */
 
 #define PERF_HIST_BUCKETS 12   /* render load in 10% steps, the last >= 110% */
+#define REVERB_LINES 10        /* AMY's stereo reverb: 4 delay + 6 early-reflection lines */
 
 typedef struct {
     uint32_t blocks;
@@ -123,6 +125,7 @@ typedef struct {
 typedef struct {
     bool reset;
     perf_acc_t acc;
+    int8_t reverb_internal;    /* bus 0's reverb lines in internal RAM, -1 = none */
 #ifdef AMY_DEBUG
     int64_t profile_us;        /* wall time the profile covers */
     struct profile profiles[NO_TAG];
@@ -180,6 +183,22 @@ static void perf_service(void)
     perf_req_t *req = __atomic_exchange_n(&s_perf_req, NULL, __ATOMIC_ACQ_REL);
     if (req == NULL) return;
     req->acc = s_perf;
+    /* Read on this task: the reverb lines are only allocated and freed by
+     * the render thread, so they cannot go away under us. Each line can
+     * land apart (AMY falls back to PSRAM line by line). */
+    reverb_params_t *rev = amy_global.bus[0]->reverb.rev;
+    if (rev == NULL || rev->delay_1 == NULL) {
+        req->reverb_internal = -1;
+    } else {
+        const delay_line_t *lines[REVERB_LINES] = {
+            rev->delay_1, rev->delay_2, rev->delay_3, rev->delay_4,
+            rev->ref_1, rev->ref_2, rev->ref_3, rev->ref_4, rev->ref_5, rev->ref_6,
+        };
+        req->reverb_internal = 0;
+        for (int i = 0; i < REVERB_LINES; i++) {
+            if (esp_ptr_internal(lines[i]->samples)) req->reverb_internal++;
+        }
+    }
 #ifdef AMY_DEBUG
     memcpy(req->profiles, profiles, sizeof(req->profiles));
     req->profile_us = amy_get_us() - profile_start_us;
@@ -409,6 +428,16 @@ static amy_config_t make_config(void)
     c.ram_caps_sample = MALLOC_CAP_SPIRAM;
     c.ram_caps_block  = MALLOC_CAP_DEFAULT;
     c.ram_caps_fbl    = MALLOC_CAP_DEFAULT;
+
+    /* The reverb's ten delay lines (~110 KB) are read and written every
+     * sample; with them in PSRAM the reverb measured ~440 us a block on the
+     * Tab5. They go to internal RAM if it has room to spare now. They are
+     * allocated later (when a script first turns the reverb up), and AMY
+     * falls back to ram_caps_delay if internal RAM has filled up by then. */
+    size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    c.ram_caps_reverb = (internal_free >= AMY_GEM_REVERB_INTERNAL_MIN_FREE)
+                      ? (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+                      : MALLOC_CAP_SPIRAM;
 
     return c;
 }
@@ -689,6 +718,15 @@ int AMY_GEM_perf_report(char *buf, size_t len, bool reset)
         }
         appendf(buf, len, &n, "\n");
     }
+    if (req->reverb_internal < 0) {
+        appendf(buf, len, &n, "  reverb lines: not allocated");
+    } else {
+        appendf(buf, len, &n, "  reverb lines: %d/%d in internal RAM",
+                req->reverb_internal, REVERB_LINES);
+    }
+    appendf(buf, len, &n, ", internal RAM free %u KB (largest block %u KB)\n",
+            (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024),
+            (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024));
 
 #ifdef AMY_DEBUG
     /* AMY's own stages (nested: render_osc_wave includes the render_lut*
