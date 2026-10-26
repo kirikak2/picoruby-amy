@@ -101,6 +101,31 @@ c_amy_blocks(mrbc_vm *vm, mrbc_value v[], int argc)
     SET_INT_RETURN((mrbc_int_t)AMY_GEM_block_count());
 }
 
+/* AMY._perf(reset) -> String (see AMY_GEM_perf_report), or nil */
+static void
+c_amy_perf(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc != 1) {
+        SET_NIL_RETURN();
+        return;
+    }
+    static const size_t len = 4096;
+    char *buf = mrbc_raw_alloc(len);
+    if (buf == NULL) {
+        SET_NIL_RETURN();
+        return;
+    }
+    int n = AMY_GEM_perf_report(buf, len, v[1].tt == MRBC_TT_TRUE);
+    if (n < 0) {
+        mrbc_raw_free(buf);
+        SET_NIL_RETURN();
+        return;
+    }
+    mrbc_value str = mrbc_string_new(vm, buf, n);
+    mrbc_raw_free(buf);
+    SET_RETURN(str);
+}
+
 /* AMY._bleep */
 static void
 c_amy_bleep(mrbc_vm *vm, mrbc_value v[], int argc)
@@ -232,6 +257,7 @@ mrbc_amy_init(mrbc_vm *vm)
     mrbc_define_method(vm, module_AMY, "_overloads",     c_amy_overloads);
     mrbc_define_method(vm, module_AMY, "_bleep",         c_amy_bleep);
     mrbc_define_method(vm, module_AMY, "_blocks",        c_amy_blocks);
+    mrbc_define_method(vm, module_AMY, "_perf",          c_amy_perf);
     mrbc_define_method(vm, module_AMY, "_log_scale",     c_amy_log_scale);
     mrbc_define_method(vm, module_AMY, "_log_unscale",   c_amy_log_unscale);
     mrbc_define_method(vm, module_AMY, "_fm_state",      c_amy_fm_state);

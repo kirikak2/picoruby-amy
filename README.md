@@ -109,7 +109,14 @@ AMY.wire("i1K130iv6Z")                                            # raw wire mes
 AMY.reset                                                         # power-on state
 AMY.patch_name(130)                                               # => "BRASS 3"
 AMY.patch_name(1)                                                 # => "A12 Brass Swell"
+AMY.render_load                                                   # smoothed, 1.0 = no headroom
+puts AMY.perf(reset: true)                                        # render timing report
 ```
+
+`AMY.perf` reports how long the audio task took to render each block since the
+last reset (average / min / max against the block period, blocks over budget,
+audible oscs, a load histogram), timed with the CPU cycle counter. Built with
+`AMY_DEBUG` on the AMY sources, AMY's per-stage profile follows.
 
 See AMY's [API reference](https://github.com/shorepine/amy/blob/main/docs/api.md)
 for the parameters.

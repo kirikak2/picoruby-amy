@@ -109,6 +109,21 @@ module AMY
     _blocks
   end
 
+  # Render timing since the last reset, as a text report (nil when AMY is not
+  # running): average / min / max render time per block against the block
+  # period, blocks over budget, audible oscs and a load histogram, plus AMY's
+  # per-stage profile when built with AMY_DEBUG. reset: true starts a new
+  # measurement window after this report.
+  def self.perf(reset: false)
+    _perf(reset)
+  end
+
+  # Start a new measurement window for AMY.perf.
+  def self.perf_reset
+    _perf(true)
+    nil
+  end
+
   # A short two-tone bleep, to check that sound comes out.
   def self.bleep
     _bleep

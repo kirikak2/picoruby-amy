@@ -39,6 +39,8 @@
 #include "driver/i2s_std.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_cpu.h"
+#include "esp_rom_sys.h"
 #include "amy.h"
 #include "midi_transport.h"   /* picoruby-midi: transport registry */
 #if CONFIG_IDF_TARGET_ESP32P4
@@ -86,6 +88,110 @@ static const char *const s_step_names[] = {
 };
 
 #define AMY_START_TIMEOUT_MS 5000
+
+/* ---------------------------------------------------------------------
+ * Render timing (AMY.perf)
+ *
+ * The audio task times every block with the CPU cycle counter: render is
+ * from the top of the loop to the block reaching write_samples() (deltas,
+ * oscillators, mix, effects, output gain), wait is the time spent in
+ * i2s_channel_write() until the DMA ring has room. Both are wall time on
+ * the audio task's core, so a higher-priority task preempting the render
+ * counts towards it.
+ *
+ * The accumulators belong to the audio task. A reader hands it a request
+ * (s_perf_req) and the task answers between two blocks, so nothing is read
+ * half-updated and a reset never lands in the middle of a block -- which
+ * matters for AMY's own profiler (AMY_DEBUG): resetting it while a stage is
+ * being timed would add the whole uptime to that stage.
+ * --------------------------------------------------------------------- */
+
+#define PERF_HIST_BUCKETS 12   /* render load in 10% steps, the last >= 110% */
+
+typedef struct {
+    uint32_t blocks;
+    uint64_t render_sum;       /* cycles */
+    uint32_t render_min;
+    uint32_t render_max;
+    uint32_t wait_min;
+    uint32_t over_budget;      /* blocks that took longer to render than to play */
+    uint64_t oscs_sum;         /* audible oscs, counted before each block */
+    uint16_t oscs_max;
+    uint32_t hist[PERF_HIST_BUCKETS];
+} perf_acc_t;
+
+typedef struct {
+    bool reset;
+    perf_acc_t acc;
+#ifdef AMY_DEBUG
+    int64_t profile_us;        /* wall time the profile covers */
+    struct profile profiles[NO_TAG];
+#endif
+} perf_req_t;
+
+#ifdef AMY_DEBUG
+extern const char *profile_tag_name(enum itags tag);
+#endif
+
+static perf_acc_t s_perf;
+static uint32_t s_block_cycles;          /* how long a block plays, in cycles */
+static uint32_t s_render_start;
+static uint16_t s_block_oscs;
+static perf_req_t *volatile s_perf_req = NULL;
+static SemaphoreHandle_t s_perf_done = NULL;
+
+static void perf_reset(void)
+{
+    memset(&s_perf, 0, sizeof(s_perf));
+    s_perf.render_min = UINT32_MAX;
+    s_perf.wait_min = UINT32_MAX;
+}
+
+static void perf_record(uint32_t render, uint32_t wait)
+{
+    perf_acc_t *p = &s_perf;
+    p->blocks++;
+    p->render_sum += render;
+    if (render < p->render_min) p->render_min = render;
+    if (render > p->render_max) p->render_max = render;
+    if (wait < p->wait_min) p->wait_min = wait;
+    if (render > s_block_cycles) p->over_budget++;
+    uint64_t bucket = (uint64_t)render * 10 / s_block_cycles;
+    p->hist[bucket < PERF_HIST_BUCKETS ? bucket : PERF_HIST_BUCKETS - 1]++;
+    p->oscs_sum += s_block_oscs;
+    if (s_block_oscs > p->oscs_max) p->oscs_max = s_block_oscs;
+}
+
+static uint16_t count_audible_oscs(void)
+{
+    /* Under the render lock: a patch load on another task can free oscs. */
+    uint16_t n = 0;
+    amy_grab_render_lock();
+    for (uint16_t osc = 0; osc < AMY_OSCS; osc++) {
+        if (synth[osc] != NULL && synth[osc]->status == SYNTH_AUDIBLE) n++;
+    }
+    amy_release_render_lock();
+    return n;
+}
+
+/* Between blocks, on the audio task: answer a pending AMY_GEM_perf_report(). */
+static void perf_service(void)
+{
+    perf_req_t *req = __atomic_exchange_n(&s_perf_req, NULL, __ATOMIC_ACQ_REL);
+    if (req == NULL) return;
+    req->acc = s_perf;
+#ifdef AMY_DEBUG
+    memcpy(req->profiles, profiles, sizeof(req->profiles));
+    req->profile_us = amy_get_us() - profile_start_us;
+#endif
+    if (req->reset) {
+        perf_reset();
+#ifdef AMY_DEBUG
+        amy_profiles_init();
+#endif
+    }
+    xSemaphoreGive(s_perf_done);
+}
 
 #if CONFIG_IDF_TARGET_ESP32P4
 /* ---------------------------------------------------------------------
@@ -197,8 +303,10 @@ static size_t write_samples(const uint8_t *buffer, size_t nbytes)
             s[i] = (int16_t)((s[i] * gain) >> 15);
         }
     }
+    uint32_t rendered = esp_cpu_get_cycle_count();
     /* Blocks until the DMA ring has room: this is what paces the task. */
     i2s_channel_write(s_tx, buffer, nbytes, &written, portMAX_DELAY);
+    perf_record(rendered - s_render_start, esp_cpu_get_cycle_count() - rendered);
     return written;
 }
 
@@ -337,10 +445,16 @@ static void audio_task(void *arg)
     amy_start(make_config());
     s_step = STEP_AMY_STARTED;
 
+    s_block_cycles = AMY_BLOCK_US * esp_rom_get_cpu_ticks_per_us();
+    perf_reset();
+
     s_running = true;
     xSemaphoreGive(s_ready);
 
     for (;;) {
+        perf_service();
+        s_block_oscs = count_audible_oscs();
+        s_render_start = esp_cpu_get_cycle_count();
         amy_update();   /* render one block, write it via write_samples() */
         s_blocks++;
     }
@@ -398,6 +512,10 @@ int AMY_GEM_start(void)
     if (s_ready == NULL) {
         s_ready = xSemaphoreCreateBinary();
         if (s_ready == NULL) return -1;
+    }
+    if (s_perf_done == NULL) {
+        s_perf_done = xSemaphoreCreateBinary();
+        if (s_perf_done == NULL) return -1;
     }
     s_start_failed = false;
 
@@ -509,6 +627,90 @@ uint32_t AMY_GEM_overload_count(void)
 uint32_t AMY_GEM_block_count(void)
 {
     return s_blocks;
+}
+
+/* snprintf onto the end of buf, keeping *n at most len - 1. */
+static void appendf(char *buf, size_t len, size_t *n, const char *fmt, ...)
+{
+    if (*n + 1 >= len) return;
+    va_list ap;
+    va_start(ap, fmt);
+    int w = vsnprintf(buf + *n, len - *n, fmt, ap);
+    va_end(ap);
+    if (w < 0) return;
+    *n += (size_t)w;
+    if (*n >= len) *n = len - 1;
+}
+
+int AMY_GEM_perf_report(char *buf, size_t len, bool reset)
+{
+    if (!s_running || buf == NULL || len == 0) return -1;
+
+    perf_req_t *req = heap_caps_calloc(1, sizeof(perf_req_t), MALLOC_CAP_DEFAULT);
+    if (req == NULL) return -1;
+    req->reset = reset;
+    __atomic_store_n(&s_perf_req, req, __ATOMIC_RELEASE);
+    if (xSemaphoreTake(s_perf_done, pdMS_TO_TICKS(100)) != pdTRUE) {
+        /* The audio task did not come round. If it still has not taken the
+         * request, withdraw it; if it has, it is about to answer. */
+        if (__atomic_exchange_n(&s_perf_req, NULL, __ATOMIC_ACQ_REL) == req) {
+            free(req);
+            return -1;
+        }
+        xSemaphoreTake(s_perf_done, portMAX_DELAY);
+    }
+
+    const perf_acc_t *p = &req->acc;
+    float mhz = (float)esp_rom_get_cpu_ticks_per_us();
+    float block_us = (float)AMY_BLOCK_US;
+    size_t n = 0;
+    buf[0] = '\0';
+    appendf(buf, len, &n, "AMY render: %lu blocks (%.1f s), block %lu us, CPU %.0f MHz\n",
+            (unsigned long)p->blocks, p->blocks * block_us / 1e6f,
+            (unsigned long)AMY_BLOCK_US, mhz);
+    if (p->blocks > 0) {
+        float avg = (float)p->render_sum / p->blocks / mhz;
+        float min = p->render_min / mhz;
+        float max = p->render_max / mhz;
+        appendf(buf, len, &n, "  render  avg %.0f us (%.1f%%)  min %.0f us  max %.0f us (%.1f%%)\n",
+                avg, 100.0f * avg / block_us, min, max, 100.0f * max / block_us);
+        appendf(buf, len, &n, "  over budget %lu blocks, I2S wait min %.0f us\n",
+                (unsigned long)p->over_budget, p->wait_min / mhz);
+        appendf(buf, len, &n, "  audible oscs  avg %.1f  max %u\n",
+                (float)p->oscs_sum / p->blocks, (unsigned)p->oscs_max);
+        appendf(buf, len, &n, "  load");
+        for (int i = 0; i < PERF_HIST_BUCKETS; i++) {
+            if (p->hist[i] == 0) continue;
+            if (i == PERF_HIST_BUCKETS - 1) {
+                appendf(buf, len, &n, "  >=%d%%:%lu", i * 10, (unsigned long)p->hist[i]);
+            } else {
+                appendf(buf, len, &n, "  %d-%d%%:%lu", i * 10, i * 10 + 10, (unsigned long)p->hist[i]);
+            }
+        }
+        appendf(buf, len, &n, "\n");
+    }
+
+#ifdef AMY_DEBUG
+    /* AMY's own stages (nested: render_osc_wave includes the render_lut*
+     * and filter calls under it). Timed with esp_timer, whose overhead
+     * inflates the stages that run many times a block. us/block compares
+     * with "render avg" above; %time is of real time, like its percentages. */
+    float profile_blocks = req->profile_us / block_us;
+    appendf(buf, len, &n, "AMY stages over %.1f s (AMY_DEBUG, nested):\n", req->profile_us / 1e6f);
+    appendf(buf, len, &n, "  %-36s %9s %9s %7s %8s\n", "stage", "calls", "us/block", "%time", "us/call");
+    for (int tag = 0; tag < NO_TAG; tag++) {
+        const struct profile *t = &req->profiles[tag];
+        if (t->calls == 0) continue;
+        float per_block = profile_blocks > 0 ? (float)t->us_total / profile_blocks : 0.0f;
+        appendf(buf, len, &n, "  %-36s %9lu %9.1f %6.1f%% %8.1f\n",
+                profile_tag_name((enum itags)tag), (unsigned long)t->calls,
+                per_block, 100.0f * per_block / block_us,
+                (float)t->us_total / (float)t->calls);
+    }
+#endif
+
+    free(req);
+    return (int)n;
 }
 
 int AMY_GEM_fm_state(uint8_t synth, char *buf, size_t len)
@@ -718,6 +920,12 @@ uint8_t AMY_GEM_transport_bit(void) { return 0; }
 float AMY_GEM_render_load(void) { return 0.0f; }
 uint32_t AMY_GEM_overload_count(void) { return 0; }
 uint32_t AMY_GEM_block_count(void) { return 0; }
+int AMY_GEM_perf_report(char *buf, size_t len, bool reset)
+{
+    (void)reset;
+    if (buf && len) buf[0] = '\0';
+    return -1;
+}
 void AMY_GEM_bleep(void) {}
 void AMY_GEM_set_output_gain(float gain) { (void)gain; }
 float AMY_GEM_output_gain(void) { return 1.0f; }

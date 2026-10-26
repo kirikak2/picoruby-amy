@@ -84,6 +84,23 @@ mrb_amy_blocks(mrb_state *mrb, mrb_value self)
     return mrb_fixnum_value((mrb_int)AMY_GEM_block_count());
 }
 
+/* AMY._perf(reset) -> String (see AMY_GEM_perf_report), or nil */
+static mrb_value
+mrb_amy_perf(mrb_state *mrb, mrb_value self)
+{
+    mrb_bool reset;
+    mrb_get_args(mrb, "b", &reset);
+    static const size_t len = 4096;
+    char *buf = (char *)mrb_malloc_simple(mrb, len);
+    if (buf == NULL) {
+        return mrb_nil_value();
+    }
+    int n = AMY_GEM_perf_report(buf, len, reset);
+    mrb_value str = (n < 0) ? mrb_nil_value() : mrb_str_new(mrb, buf, n);
+    mrb_free(mrb, buf);
+    return str;
+}
+
 /* AMY._bleep */
 static mrb_value
 mrb_amy_bleep(mrb_state *mrb, mrb_value self)
@@ -170,6 +187,7 @@ mrb_picoruby_amy_gem_init(mrb_state *mrb)
     mrb_define_module_function_id(mrb, m, MRB_SYM(_overloads),     mrb_amy_overloads,     MRB_ARGS_NONE());
     mrb_define_module_function_id(mrb, m, MRB_SYM(_bleep),         mrb_amy_bleep,         MRB_ARGS_NONE());
     mrb_define_module_function_id(mrb, m, MRB_SYM(_blocks),        mrb_amy_blocks,        MRB_ARGS_NONE());
+    mrb_define_module_function_id(mrb, m, MRB_SYM(_perf),          mrb_amy_perf,          MRB_ARGS_REQ(1));
     mrb_define_module_function_id(mrb, m, MRB_SYM(_log_scale),     mrb_amy_log_scale,     MRB_ARGS_REQ(3));
     mrb_define_module_function_id(mrb, m, MRB_SYM(_log_unscale),   mrb_amy_log_unscale,   MRB_ARGS_REQ(3));
     mrb_define_module_function_id(mrb, m, MRB_SYM(_fm_state),      mrb_amy_fm_state,      MRB_ARGS_REQ(1));

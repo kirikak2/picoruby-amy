@@ -67,6 +67,16 @@ uint32_t AMY_GEM_overload_count(void);
  * default 256 frames / 44.1 kHz). Climbing = the audio task is alive. */
 uint32_t AMY_GEM_block_count(void);
 
+/* Write a text report of how long the audio task took to render each block
+ * since the last reset: average / min / max render time against the block
+ * period, blocks over budget, the shortest I2S wait, audible oscs and a
+ * load histogram. Built with AMY_DEBUG, AMY's per-stage profile follows.
+ * The figures are wall time on the audio task's core (preemption counts).
+ * reset = true starts a new measurement window. Blocks for up to one audio
+ * block while the audio task takes the snapshot. Returns the length
+ * written, or -1 when the engine is not running. */
+int AMY_GEM_perf_report(char *buf, size_t len, bool reset);
+
 /* Write the FM-relevant state of AMY synth `synth` (as a DX7 patch lays it
  * out) into `buf` as text, one item per line:
  *   algo <n>
