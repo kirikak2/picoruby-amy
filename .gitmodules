@@ -1,3 +1,4 @@
 [submodule "lib/amy"]
 	path = lib/amy
-	url = https://github.com/shorepine/amy.git
+	url = https://github.com/kirikak2/amy.git
+	branch = midori
