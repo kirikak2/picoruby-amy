@@ -69,6 +69,34 @@ c_amy_send_packet(mrbc_vm *vm, mrbc_value v[], int argc)
     SET_INT_RETURN(ret);
 }
 
+/* AMY._bind(synth, channel) -> 0 / -1 (channel -1 = none) */
+static void
+c_amy_bind(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    if (argc != 2) {
+        SET_INT_RETURN(-1);
+        return;
+    }
+    int synth = GET_INT_ARG(1);
+    if (synth < 0 || synth > 255) {
+        SET_INT_RETURN(-1);
+        return;
+    }
+    SET_INT_RETURN(AMY_GEM_bind_synth((uint8_t)synth, GET_INT_ARG(2)));
+}
+
+/* AMY._channel_synths(channel) -> mask (bit n - 1 = synth n) */
+static void
+c_amy_channel_synths(mrbc_vm *vm, mrbc_value v[], int argc)
+{
+    int channel = (argc == 1) ? GET_INT_ARG(1) : -1;
+    if (channel < 0 || channel > 15) {
+        SET_INT_RETURN(0);
+        return;
+    }
+    SET_INT_RETURN(AMY_GEM_channel_synths((uint8_t)channel));
+}
+
 /* AMY._transport_bit */
 static void
 c_amy_transport_bit(mrbc_vm *vm, mrbc_value v[], int argc)
@@ -252,6 +280,8 @@ mrbc_amy_init(mrbc_vm *vm)
     mrbc_define_method(vm, module_AMY, "_reset",         c_amy_reset);
     mrbc_define_method(vm, module_AMY, "_send",          c_amy_send);
     mrbc_define_method(vm, module_AMY, "_send_packet",   c_amy_send_packet);
+    mrbc_define_method(vm, module_AMY, "_bind",          c_amy_bind);
+    mrbc_define_method(vm, module_AMY, "_channel_synths", c_amy_channel_synths);
     mrbc_define_method(vm, module_AMY, "_transport_bit", c_amy_transport_bit);
     mrbc_define_method(vm, module_AMY, "_render_load",   c_amy_render_load);
     mrbc_define_method(vm, module_AMY, "_overloads",     c_amy_overloads);

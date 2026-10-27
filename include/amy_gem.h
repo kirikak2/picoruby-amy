@@ -40,18 +40,35 @@ int AMY_GEM_start(void);
 /* Whether the engine is running. */
 bool AMY_GEM_running(void);
 
-/* Return AMY to its power-on state: every synth, patch, CC mapping and
- * effect is cleared. The audio task and I2S keep running. */
+/* Return AMY to its power-on state: every synth, patch, CC mapping,
+ * channel binding and effect is cleared. The audio task and I2S keep
+ * running. */
 void AMY_GEM_reset(void);
 
 /* Queue one AMY wire message (e.g. "i1K130iv6Z"). Safe from any task.
  * Returns 0, or -1 when the engine is not running. */
 int AMY_GEM_send_message(const char *message);
 
-/* Hand one USB-MIDI packet to AMY's MIDI input (the transport's
- * send_packet). Returns 0, or -1 when not running / not a channel message. */
+/* Hand one USB-MIDI packet to AMY (the transport's send_packet). A channel
+ * message goes to every synth bound to its channel (AMY_GEM_bind_synth),
+ * a system message to AMY's own MIDI input. Returns 0, or -1 when not
+ * running / not a message AMY takes. */
 int AMY_GEM_send_packet(uint8_t cable, uint8_t cin,
                         uint8_t b1, uint8_t b2, uint8_t b3);
+
+/* AMY synths a MIDI channel can play: 1 .. AMY_GEM_MAX_PARTS. AMY keeps
+ * CC mappings for synths 1..16 only (AMY_NUM_MIDI_CHANNELS). */
+#define AMY_GEM_MAX_PARTS 16
+
+/* Make MIDI channel `channel` (0..15) play AMY synth `synth`, in place of
+ * the channel it played before; channel -1 = no channel. Several synths may
+ * share a channel (a layer): send_packet hands each of them the message.
+ * A channel with no synth bound is silent. AMY_GEM_reset() unbinds all.
+ * Returns 0, or -1 for a synth / channel out of range. */
+int AMY_GEM_bind_synth(uint8_t synth, int channel);
+
+/* The synths channel `channel` plays, as a mask: bit n - 1 = synth n. */
+uint16_t AMY_GEM_channel_synths(uint8_t channel);
 
 /* The bit picoruby-midi's transport registry assigned to AMY (0 until
  * AMY_GEM_start() succeeded). This is the transport_id seen from Ruby. */

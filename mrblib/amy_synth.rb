@@ -1,14 +1,14 @@
-# AMY::Synth -- a subtractive synth with up to four oscillators, one LFO,
-# a filter and two ADSR envelopes, on one MIDI channel.
+# AMY::Synth -- a subtractive part (AMY.add_synth) with up to four
+# oscillators, one LFO, a filter and two ADSR envelopes.
 #
-#   syn = AMY::Synth.new(channel: 1, voices: 6)    # channel 1 = AMY synth 2
+#   syn = AMY.add_synth(channel: 1, voices: 6)
 #   syn.patch = 1                     # start from a Juno-60 preset (0..127)
 #   syn.osc(1).wave = :saw
 #   syn.osc(2).octave = -1
 #   syn.cutoff = 1200
 #   syn.filter_envelope(attack: 5, decay: 400, sustain: 0.3, release: 300)
 #   syn.lfo.vibrato = 0.02
-#   dev = MIDI::Device.new(syn.transport)
+#   dev = MIDI::Device.new(MIDIDevices.amy)    # channel: 1 plays it
 #
 # The voice is laid out the way AMY's Juno patches are, so any of them loads
 # into it and reads back onto the same parameters:
@@ -25,7 +25,7 @@
 # Parameters set here are commands to the whole synth, so they reach every
 # voice at once.
 module AMY
-  class Synth
+  class Synth < Part
     HEAD = 0
     LFO_OSC = 1
     FIRST_OSC = 2
@@ -85,17 +85,15 @@ module AMY
       echo:       [PARAM_ECHO_LEVEL,   :bus,  0.0,  1.0,  false]
     }
 
-    attr_reader :channel, :voices, :patch, :transport, :lfo
+    attr_reader :patch, :lfo
 
-    # channel: MIDI channel, 0-based (AMY synth channel + 1)
+    # Prefer AMY.add_synth, which is the same thing.
+    # channel: MIDI channel 0..15 (nil = none); other parts may share it
     # voices:  polyphony
     # patch:   a Juno-60 preset (0..127) to start from, or nil for the
     #          plain initial voice (one saw through an open lowpass)
     def initialize(channel: 0, voices: 6, patch: nil)
-      @transport = AMY::Transport.instance
-      @channel = channel
-      @number = channel + 1
-      @voices = voices
+      _attach(channel, voices)
       @oscs = []
       i = 1
       while i <= MAX_OSCS
@@ -113,9 +111,8 @@ module AMY
       end
     end
 
-    # The AMY synth number this object drives (channel + 1).
-    def synth_number
-      @number
+    def kind
+      :synth
     end
 
     # Oscillator n (1..4).
@@ -134,8 +131,8 @@ module AMY
     # pulse an octave down, 4 noise (2..4 at level 0), through an open
     # 24 dB lowpass, LFO a 5 Hz triangle routed nowhere.
     def init_voice
-      AMY.command(synth: @number, num_voices: @voices, oscs_per_voice: OSCS_PER_VOICE)
-      AMY.command(synth: @number, synth_flags: SYNTH_FLAGS_NO_NOTE_WARNINGS)
+      synth_command({ num_voices: @voices, oscs_per_voice: OSCS_PER_VOICE })
+      synth_command({ synth_flags: SYNTH_FLAGS_NO_NOTE_WARNINGS })
       @patch = nil
       @values = {
         filter: :lowpass24, cutoff: 4000.0, resonance: 0.7, key_track: 0.0,
@@ -178,8 +175,8 @@ module AMY
       if number < 0 || number > 127
         raise ArgumentError, "AMY::Synth: patch must be a Juno preset, 0..127"
       end
-      AMY.command(synth: @number, num_voices: @voices, patch: number)
-      AMY.command(synth: @number, synth_flags: SYNTH_FLAGS_NO_NOTE_WARNINGS)
+      synth_command({ num_voices: @voices, patch: number })
+      synth_command({ synth_flags: SYNTH_FLAGS_NO_NOTE_WARNINGS })
       @patch = number
       refresh
       split_filter_envelope
@@ -196,7 +193,7 @@ module AMY
     # @return [Boolean] false if AMY has no such synth
     def refresh
       AMY.wait_blocks(2)
-      text = AMY._synth_state(@number)
+      text = AMY._synth_state(live_number)
       return false if text.nil?
       oscs = {}
       fx = {}
@@ -273,12 +270,6 @@ module AMY
       @values[:pan] = v
     end
 
-    # Level of this synth (0.0 .. 1.0, 1.0 = unchanged).
-    def volume=(v)
-      AMY.command(synth: @number, synth_level: v)
-      @values[:volume] = v
-    end
-
     # Portamento of every oscillator, in ms.
     def glide=(ms)
       @oscs.each { |o| o._command(:portamento, ms.to_i) }
@@ -351,7 +342,6 @@ module AMY
     def key_track;     @values[:key_track];     end
     def velocity;      @values[:velocity];      end
     def pan;           @values[:pan];           end
-    def volume;        @values[:volume];        end
     def glide;         @values[:glide];         end
     def reverb;        @values[:reverb];        end
     def chorus;        @values[:chorus];        end
@@ -418,7 +408,7 @@ module AMY
 
     # --- CC mapping (inside AMY) ---
     #
-    # Make AMY itself apply CC `cc` on this synth's channel to `param`, with
+    # Make AMY itself apply CC `cc` on this part's channel to `param`, with
     # no Ruby in the path (see CC_TARGETS for what can be mapped).
     #   syn.map_cc(74, :cutoff)                       # default range
     #   syn.map_cc(71, :resonance, min: 0.7, max: 4)
@@ -446,18 +436,17 @@ module AMY
       else
         spec << pnum
       end
-      AMY.command(synth: @number, midi_cc: spec)
-    end
-
-    # Remove one CC mapping, or all of this synth's mappings.
-    def unmap_cc(cc = nil)
-      AMY.command(synth: @number, midi_cc: cc.nil? ? 255 : cc)
+      synth_command({ midi_cc: spec })
     end
 
     # --- Internal ---
 
-    def osc_command(osc, key, value)
-      AMY.command_hash({ synth: @number, osc: osc, key => value })
+    def _reload
+      if @patch.nil?
+        init_voice
+      else
+        self.patch = @patch
+      end
     end
 
     def head_command(key, value)
@@ -466,9 +455,9 @@ module AMY
 
     # Several parameters of the head in one message.
     def head(params)
-      h = { synth: @number, osc: HEAD }
+      h = { osc: HEAD }
       params.each { |k, v| h[k] = v }
-      AMY.command_hash(h)
+      synth_command(h)
     end
 
     # "w=1 a=0.5,,0" fields from index `from` -> { "w" => "1", "a" => "0.5,,0" }
@@ -655,14 +644,14 @@ module AMY
       def _init(wave, level, octave, chained)
         @values = { wave: wave, level: level, octave: octave, detune: 0.0, duty: 0.5, glide: 0 }
         h = {
-          synth: @synth.synth_number, osc: osc, wave: WAVES[wave],
+          osc: osc, wave: WAVES[wave],
           amp: [level, 0, 0, 0, 0, 0, 0],
           freq: [Synth.octaves_to_freq(octave.to_f), 1, 0, 0, 0, 0, 1],
           duty: [0.5, 0, 0, 0, 0, 0, 0],
           mod_source: LFO_OSC, portamento: 0
         }
         h[:chained_osc] = chained unless chained.nil?
-        AMY.command_hash(h)
+        @synth.synth_command(h)
       end
 
       def _load(h)
@@ -763,8 +752,8 @@ module AMY
       # not a note reached it.
       def _init
         @values = { wave: :triangle, rate: 5.0, vibrato: 0.0, filter: 0.0, tremolo: 0.0, pwm: 0.0 }
-        AMY.command_hash({
-          synth: @synth.synth_number, osc: LFO_OSC, wave: WAVES[:triangle],
+        @synth.synth_command({
+          osc: LFO_OSC, wave: WAVES[:triangle],
           freq: [5.0, 0, 0, 0, 0, 0, 0], amp: [1, 0, 0, 0, 0, 0, 0],
           bp0: [0, 1, 0, 0]
         })

@@ -7,8 +7,8 @@ driven like any other MIDI device.
 
 AMY (MIT, Brian Whitman and Dan Ellis) covers DX7-style FM, Juno-6 style
 analog, PCM, partials and a piano; it ships 128 DX7 and 128 Juno presets. This
-gem wraps two of them with named parameters: `AMY::FM` (the DX7 presets) and
-`AMY::Synth` (a subtractive synth laid out like the Juno presets).
+gem wraps two of them as *parts* with named parameters: `AMY::FM` (the DX7
+presets) and `AMY::Synth` (a subtractive synth laid out like the Juno presets).
 
 ## Usage
 
@@ -16,8 +16,9 @@ gem wraps two of them with named parameters: `AMY::FM` (the DX7 presets) and
 require 'midi'
 require 'amy'
 
-fm  = AMY::FM.new(channel: 0, voices: 6, patch: 128)   # DX7 presets: 128..255
-dev = MIDI::Device.new(fm.transport)                   # a MIDI transport
+amy = AMY::Transport.instance          # MIDIDevices.amy on Midori
+fm  = amy.add_fm(channel: 0, voices: 6, patch: 128)   # DX7 presets: 128..255
+dev = MIDI::Device.new(amy)            # a MIDI transport like any other
 dev.trigger(60, 100, duration: 300)
 
 fm.algorithm = 5                 # 1..32
@@ -29,8 +30,38 @@ fm.filter_freq = 2000            # turns a lowpass on
 fm.reverb = 0.3
 ```
 
-MIDI channel N (0-based, as in `MIDI::Device`) plays AMY synth N + 1, once
-that synth exists.
+### Parts and channels
+
+The engine holds up to 16 parts, added with `add_fm` / `add_synth` (on the
+transport, or as `AMY.add_fm` / `AMY.add_synth`). Each listens on the MIDI
+channel given (0-based, as in `MIDI::Device`); any number of parts may share
+a channel, and a message on it reaches all of them -- a layer. A channel with
+no part is silent.
+
+```ruby
+bass = amy.add_synth(channel: 0, voices: 2, patch: 3)
+pad  = amy.add_fm(channel: 1, voices: 6, patch: 130)
+bell = amy.add_fm(channel: 1, voices: 4, patch: 140)   # layered with pad
+
+dev.note_on(48, 100)               # bass
+dev.note_on(60, 100, channel: 1)   # pad and bell
+
+bell.channel = 2                   # move it (nil = listen on no channel)
+bell.voices  = 2                   # reloads its patch
+amy.parts(channel: 1)              # => [pad]
+bell.remove                        # frees its voices; AMY.remove_all for all
+```
+
+Each part is its own AMY synth (`part.synth_number`, taken from the free ones,
+unrelated to the channel), so presets, parameters, CC mappings and volume are
+per part. Program Change and CCs on a channel reach every part on it. The bus
+effects (`reverb`, `chorus`, `echo`) are shared by all parts. `AMY.reset`
+removes every part.
+
+`AMY::FM.new(...)` / `AMY::Synth.new(...)` are the same as `add_fm` /
+`add_synth`. For a synth built by hand with `AMY.command`, `AMY.bind(synth,
+channel)` makes a channel play it (keep its number clear of the parts', e.g.
+16 and down).
 
 ### Two ways to control a parameter
 
@@ -65,7 +96,7 @@ presets, so any of them (0..127) loads and reads back onto the same
 parameters:
 
 ```ruby
-syn = AMY::Synth.new(channel: 1, voices: 6)   # plain initial voice
+syn = amy.add_synth(channel: 1, voices: 6)    # plain initial voice
 syn.patch = 1                     # or start from a Juno preset ("A12 Brass Swell")
 
 syn.osc(1).wave   = :saw          # :sine :triangle :saw :saw_down :pulse :noise

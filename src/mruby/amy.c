@@ -56,6 +56,26 @@ mrb_amy_send_packet(mrb_state *mrb, mrb_value self)
     return mrb_fixnum_value(ret);
 }
 
+/* AMY._bind(synth, channel) -> 0 / -1 (channel -1 = none) */
+static mrb_value
+mrb_amy_bind(mrb_state *mrb, mrb_value self)
+{
+    mrb_int synth, channel;
+    mrb_get_args(mrb, "ii", &synth, &channel);
+    if (synth < 0 || synth > 255) return mrb_fixnum_value(-1);
+    return mrb_fixnum_value(AMY_GEM_bind_synth((uint8_t)synth, (int)channel));
+}
+
+/* AMY._channel_synths(channel) -> mask (bit n - 1 = synth n) */
+static mrb_value
+mrb_amy_channel_synths(mrb_state *mrb, mrb_value self)
+{
+    mrb_int channel;
+    mrb_get_args(mrb, "i", &channel);
+    if (channel < 0 || channel > 15) return mrb_fixnum_value(0);
+    return mrb_fixnum_value(AMY_GEM_channel_synths((uint8_t)channel));
+}
+
 /* AMY._transport_bit */
 static mrb_value
 mrb_amy_transport_bit(mrb_state *mrb, mrb_value self)
@@ -182,6 +202,8 @@ mrb_picoruby_amy_gem_init(mrb_state *mrb)
     mrb_define_module_function_id(mrb, m, MRB_SYM(_reset),         mrb_amy_reset,         MRB_ARGS_NONE());
     mrb_define_module_function_id(mrb, m, MRB_SYM(_send),          mrb_amy_send,          MRB_ARGS_REQ(1));
     mrb_define_module_function_id(mrb, m, MRB_SYM(_send_packet),   mrb_amy_send_packet,   MRB_ARGS_REQ(5));
+    mrb_define_module_function_id(mrb, m, MRB_SYM(_bind),          mrb_amy_bind,          MRB_ARGS_REQ(2));
+    mrb_define_module_function_id(mrb, m, MRB_SYM(_channel_synths), mrb_amy_channel_synths, MRB_ARGS_REQ(1));
     mrb_define_module_function_id(mrb, m, MRB_SYM(_transport_bit), mrb_amy_transport_bit, MRB_ARGS_NONE());
     mrb_define_module_function_id(mrb, m, MRB_SYM(_render_load),   mrb_amy_render_load,   MRB_ARGS_NONE());
     mrb_define_module_function_id(mrb, m, MRB_SYM(_overloads),     mrb_amy_overloads,     MRB_ARGS_NONE());

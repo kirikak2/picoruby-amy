@@ -3,25 +3,30 @@
 # The AMY engine (https://github.com/shorepine/amy) running on its own
 # audio task and playing out of the board's I2S output.
 #
-# Three ways in, from low to high level:
+# One engine, any number of instruments ("parts") on it, each listening on
+# a MIDI channel of its own choosing -- several parts on one channel play
+# together (a layer):
 #
-#   AMY.command(synth: 1, patch: 130, num_voices: 6)   # any AMY parameter
-#   AMY.wire("i1K130iv6Z")                              # raw wire message
+#   amy  = MIDIDevices.amy                              # AMY::Transport
+#   bass = amy.add_synth(channel: 0, voices: 2, patch: 3)   # Juno preset
+#   pad  = amy.add_fm(channel: 1, voices: 6, patch: 130)    # DX7 preset
+#   bell = amy.add_fm(channel: 1, voices: 4, patch: 140)    # layered on ch 1
+#   pad.algorithm = 5
+#   bass.cutoff = 800
 #
-#   fm = AMY::FM.new(channel: 0, voices: 6, patch: 128) # FM synth object
-#   fm.algorithm = 5
-#   fm.op(2).attack = 30
-#   fm.map_cc(74, :filter_freq)                         # CC -> parameter, inside AMY
+# The engine is a picoruby-midi transport, so it plugs in like any other
+# MIDI device; a channel message reaches every part on that channel:
 #
-# and as a MIDI transport, so it plugs into picoruby-midi like any other
-# MIDI device:
+#   dev = MIDI::Device.new(MIDIDevices.amy)   # or AMY::Transport.instance
+#   dev.note_on(60, 100, channel: 1)          # pad and bell
+#   dev.trigger(36, 100, duration: 200)       # bass
 #
-#   dev = MIDI::Device.new(AMY::Transport.instance)   # or MIDI::Device.new(fm.transport)
-#   dev.note_on(60, 100)
-#   dev.trigger(64, 100, duration: 200)
+# AMY.add_fm / AMY.add_synth do the same without the transport object.
+# Below the parts are the raw forms, for any AMY parameter:
 #
-# MIDI channel N (0-based, as in MIDI::Device) plays AMY synth N + 1, and
-# only once that synth has been set up (AMY::FM.new or AMY.command(synth:)).
+#   AMY.command(synth: 16, patch: 130, num_voices: 6)
+#   AMY.wire("i16K130iv6Z")
+#   AMY.bind(16, 3)                           # MIDI channel 3 plays synth 16
 module AMY
   # Wire codes for AMY.command. A subset of AMY's docs/api.md tables:
   # synths, oscillators, FM, filters, envelopes and the global effects.
@@ -75,6 +80,7 @@ module AMY
   # cleared. Audio keeps running.
   def self.reset
     _reset
+    _forget_parts
     # The reset is queued and runs on the audio task's next block, while a
     # patch load (AMY::FM.new, fm.patch =) runs right away on this task. Wait
     # for the reset to land, or it wipes a synth set up next.
@@ -183,6 +189,103 @@ module AMY
     end
   end
 
+  # --- Parts --------------------------------------------------------------
+
+  # At most this many parts at once: AMY keeps CC mappings for synths 1..16.
+  MAX_PARTS = 16
+
+  # Add a DX7-style FM part (AMY::FM). channel: 0..15, or nil to add it
+  # listening on no channel. patch: a DX7 preset, 128..255.
+  def self.add_fm(channel: 0, voices: 6, patch: 128)
+    FM.new(channel: channel, voices: voices, patch: patch)
+  end
+
+  # Add a subtractive part (AMY::Synth). patch: a Juno-60 preset (0..127),
+  # or nil for the plain initial voice.
+  def self.add_synth(channel: 0, voices: 6, patch: nil)
+    Synth.new(channel: channel, voices: voices, patch: patch)
+  end
+
+  # Every part, in synth-number order; with channel:, the ones on it.
+  def self.parts(channel: nil)
+    list = []
+    _parts_table.each do |part|
+      next if part.nil?
+      list << part if channel.nil? || part.channel == channel
+    end
+    list
+  end
+
+  # Remove a part: its synth is freed in AMY and the channel stops playing it.
+  def self.remove(part)
+    part.remove
+  end
+
+  def self.remove_all
+    parts.each { |part| part.remove }
+    nil
+  end
+
+  # Make MIDI channel `channel` (0..15, nil = none) play AMY synth `synth`.
+  # Parts do this themselves; this is for a synth set up with AMY.command.
+  # Keep such synths clear of the parts' numbers (they take 1, 2, ... in
+  # order), e.g. from 16 down.
+  def self.bind(synth, channel)
+    _bind(synth, channel.nil? ? -1 : channel) == 0
+  end
+
+  # The synth numbers MIDI channel `channel` plays.
+  def self.channel_synths(channel)
+    mask = _channel_synths(channel)
+    list = []
+    n = 1
+    while mask != 0
+      list << n if mask & 1 == 1
+      mask = mask >> 1
+      n += 1
+    end
+    list
+  end
+
+  # synth number - 1 => part (nil = free)
+  def self._parts_table
+    if $__amy_parts__.nil?
+      t = []
+      MAX_PARTS.times { t << nil }
+      $__amy_parts__ = t
+    end
+    $__amy_parts__
+  end
+
+  # Claim the lowest free synth number for `part`.
+  def self._alloc_synth(part)
+    t = _parts_table
+    i = 0
+    while i < MAX_PARTS
+      if t[i].nil?
+        t[i] = part
+        return i + 1
+      end
+      i += 1
+    end
+    raise "AMY: no free synth (at most #{MAX_PARTS} parts)"
+  end
+
+  def self._free_synth(number)
+    _parts_table[number - 1] = nil
+  end
+
+  # After AMY.reset: the synths are gone, so are the parts.
+  def self._forget_parts
+    t = _parts_table
+    i = 0
+    while i < MAX_PARTS
+      t[i]._detach unless t[i].nil?
+      t[i] = nil
+      i += 1
+    end
+  end
+
   # --- Helpers ------------------------------------------------------------
 
   # The inverse of scale: where `value` sits on min..max, as 0.0..127.0 --
@@ -252,10 +355,136 @@ module AMY
     def device_info
       "AMY synthesizer"
     end
+
+    # Parts on this engine; see AMY.add_fm and friends.
+    def add_fm(channel: 0, voices: 6, patch: 128)
+      AMY.add_fm(channel: channel, voices: voices, patch: patch)
+    end
+
+    def add_synth(channel: 0, voices: 6, patch: nil)
+      AMY.add_synth(channel: channel, voices: voices, patch: patch)
+    end
+
+    def parts(channel: nil)
+      AMY.parts(channel: channel)
+    end
+
+    def remove(part)
+      AMY.remove(part)
+    end
+
+    def remove_all
+      AMY.remove_all
+    end
   end
 
   # ==========================================================================
-  # AMY::FM -- a DX7-style FM synth on one MIDI channel
+  # AMY::Part -- one instrument (an AMY synth) on the engine
+  # ==========================================================================
+  #
+  # What AMY::FM and AMY::Synth share: a synth number of its own, the MIDI
+  # channel it listens on, and removal. The number is taken from the free
+  # ones (1..MAX_PARTS) and has nothing to do with the channel, so any
+  # number of parts can share a channel.
+  class Part
+    attr_reader :channel, :voices, :transport
+
+    # The AMY synth number this part drives (nil once removed).
+    def synth_number
+      @number
+    end
+
+    # MIDI channel (0..15) this part plays from, or nil for none. Can be
+    # changed at any time; notes already sounding finish on their own.
+    def channel=(ch)
+      unless ch.nil? || (ch.is_a?(Integer) && ch >= 0 && ch <= 15)
+        raise ArgumentError, "AMY: channel must be 0..15 or nil"
+      end
+      AMY._bind(live_number, ch.nil? ? -1 : ch)
+      @channel = ch
+    end
+
+    # Polyphony. Changing it reloads the part's patch (or initial voice).
+    def voices=(n)
+      @voices = n
+      _reload
+    end
+
+    # Level of this part (0.0 .. 1.0, 1.0 = unchanged).
+    def volume=(v)
+      synth_command({ synth_level: v })
+      @values[:volume] = v
+    end
+
+    def volume
+      @values[:volume]
+    end
+
+    # Take the part off the engine: its voices are freed and its channel no
+    # longer plays it. The object is dead afterwards.
+    # @return [Boolean] false if it was already removed
+    def remove
+      return false if @number.nil?
+      AMY._bind(@number, -1)
+      AMY.command(synth: @number, num_voices: 0)
+      # Let the removal land before the number can be handed out again.
+      AMY.wait_blocks(2)
+      AMY._free_synth(@number)
+      _detach
+      true
+    end
+
+    def removed?
+      @number.nil?
+    end
+
+    # Remove one CC mapping, or all of this part's mappings.
+    def unmap_cc(cc = nil)
+      synth_command({ midi_cc: cc.nil? ? 255 : cc })
+    end
+
+    # --- Internal ---
+
+    # Claim a synth number and listen on `channel`. Called first thing by
+    # a subclass's initialize, before any command.
+    def _attach(channel, voices)
+      @transport = AMY::Transport.instance
+      @voices = voices
+      @values = {}
+      @number = AMY._alloc_synth(self)
+      begin
+        self.channel = channel
+      rescue => e
+        AMY._free_synth(@number)
+        @number = nil
+        raise e
+      end
+    end
+
+    def _detach
+      @number = nil
+      @channel = nil
+    end
+
+    # One command addressed to this part's synth.
+    def synth_command(params)
+      h = { synth: live_number }
+      params.each { |k, v| h[k] = v }
+      AMY.command_hash(h)
+    end
+
+    def osc_command(osc, key, value)
+      AMY.command_hash({ synth: live_number, osc: osc, key => value })
+    end
+
+    def live_number
+      raise "AMY: this part has been removed" if @number.nil?
+      @number
+    end
+  end
+
+  # ==========================================================================
+  # AMY::FM -- a DX7-style FM part (AMY.add_fm)
   # ==========================================================================
   #
   # Built on AMY's DX7 patches (128..255). Their voice layout: osc 0 is the
@@ -266,7 +495,7 @@ module AMY
   #
   # Parameters set here are commands to the whole synth, so they reach every
   # voice at once.
-  class FM
+  class FM < Part
     ALGO_OSC = 0
 
     FILTER_TYPES = {
@@ -287,23 +516,20 @@ module AMY
       chorus:      [PARAM_CHORUS_LEVEL, :bus,  0.0,  1.0,  false]
     }
 
-    attr_reader :channel, :voices, :patch, :transport
+    attr_reader :patch
 
-    # channel: MIDI channel, 0-based (AMY synth channel + 1)
+    # Prefer AMY.add_fm, which is the same thing.
+    # channel: MIDI channel 0..15 (nil = none); other parts may share it
     # voices:  polyphony
     # patch:   AMY patch number, DX7 presets are 128..255
     def initialize(channel: 0, voices: 6, patch: 128)
-      @transport = AMY::Transport.instance
-      @channel = channel
-      @number = channel + 1
-      @voices = voices
       @ops = {}
+      _attach(channel, voices)
       self.patch = patch
     end
 
-    # The AMY synth number this object drives (channel + 1).
-    def synth_number
-      @number
+    def kind
+      :fm
     end
 
     # Load a patch. Everything set through this object since the last load
@@ -311,9 +537,9 @@ module AMY
     # refresh), so algorithm, feedback and op(n).level / ratio / attack ...
     # report the preset. Takes a couple of audio blocks (~12 ms).
     def patch=(number)
-      AMY.command(synth: @number, num_voices: @voices, patch: number)
+      synth_command({ num_voices: @voices, patch: number })
       # After the load: a patch may carry flags of its own.
-      AMY.command(synth: @number, synth_flags: SYNTH_FLAGS_NO_NOTE_WARNINGS)
+      synth_command({ synth_flags: SYNTH_FLAGS_NO_NOTE_WARNINGS })
       @patch = number
       @values = {}
       @filter = :none
@@ -333,7 +559,7 @@ module AMY
     # @return [Boolean] false if AMY has no such synth
     def refresh
       AMY.wait_blocks(2)
-      text = AMY._fm_state(@number)
+      text = AMY._fm_state(live_number)
       return false if text.nil?
       text.split("\n").each do |line|
         f = line.split(" ")
@@ -393,12 +619,6 @@ module AMY
       @values[:resonance] = q
     end
 
-    # Level of this synth (0.0 .. 1.0, 1.0 = unchanged).
-    def volume=(v)
-      AMY.command(synth: @number, synth_level: v)
-      @values[:volume] = v
-    end
-
     # Reverb send level of the output bus (shared by every synth on it).
     def reverb=(v)
       AMY.command(reverb: v)
@@ -414,7 +634,6 @@ module AMY
     def feedback;    @values[:feedback];    end
     def filter_freq; @values[:filter_freq]; end
     def resonance;   @values[:resonance];   end
-    def volume;      @values[:volume];      end
     def reverb;      @values[:reverb];      end
 
     # --- Generic set / get ---
@@ -453,7 +672,7 @@ module AMY
 
     # --- CC mapping (inside AMY) ---
     #
-    # Make AMY itself apply CC `cc` on this synth's channel to `param`, with
+    # Make AMY itself apply CC `cc` on this part's channel to `param`, with
     # no Ruby in the path. Parameters that cannot be mapped this way (the
     # envelopes, the algorithm, the patch) go through set / the operator
     # accessors instead.
@@ -476,18 +695,13 @@ module AMY
         raise ArgumentError, "AMY::FM: #{param} needs op:" if op.nil?
         spec << self.op(op).osc
       end
-      AMY.command(synth: @number, midi_cc: spec)
-    end
-
-    # Remove one CC mapping, or all of this synth's mappings.
-    def unmap_cc(cc = nil)
-      AMY.command(synth: @number, midi_cc: cc.nil? ? 255 : cc)
+      synth_command({ midi_cc: spec })
     end
 
     # --- Internal ---
 
-    def osc_command(osc, key, value)
-      AMY.command_hash({ synth: @number, osc: osc, key => value })
+    def _reload
+      self.patch = @patch
     end
 
     # ========================================================================

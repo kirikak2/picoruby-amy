@@ -67,6 +67,10 @@ static volatile bool s_start_failed = false;
 static volatile uint32_t s_overloads = 0;
 static volatile esp_err_t s_i2s_err = ESP_OK;
 static volatile uint32_t s_blocks = 0;     /* blocks rendered: proof of life */
+/* Which AMY synths each MIDI channel plays: bit n - 1 = synth n (1..16).
+ * Written by AMY_GEM_bind_synth() on the Ruby task, read by whichever task
+ * sends a packet; each entry is one aligned 16-bit store, so no lock. */
+static volatile uint16_t s_channel_synths[16];
 /* Output gain in Q15 (32768 = unity), applied to every block on its way to
  * I2S. For boards with no codec to set a volume on. */
 static volatile int32_t s_gain_q15 = 32768;
@@ -596,6 +600,7 @@ void AMY_GEM_reset(void)
     char msg[16];
     snprintf(msg, sizeof(msg), "S%dZ", RESET_ALL_OSCS);
     amy_add_message(msg);
+    for (int ch = 0; ch < 16; ch++) s_channel_synths[ch] = 0;
 }
 
 int AMY_GEM_send_message(const char *message)
@@ -611,6 +616,28 @@ int AMY_GEM_send_message(const char *message)
     amy_add_message(buf);
     if (buf != stack_buf) free(buf);
     return 0;
+}
+
+/* AMY's MIDI input (amy_event_midi_message_received) plays channel N on
+ * synth N + 1. Here the channel picks the synths from s_channel_synths
+ * instead, and each one gets what AMY would have done for its own channel:
+ * the instrument messages, then the notes and CC mappings. */
+void amy_received_control_change(uint8_t channel, uint8_t control, uint8_t value);
+void amy_received_program_change(uint8_t channel, uint8_t program);
+void amy_received_pedal(uint8_t channel, uint8_t value);
+void amy_received_all_notes_off(uint8_t channel);
+void amy_received_pitch_bend(uint8_t channel, uint8_t low_byte, uint8_t high_byte);
+
+static void deliver_to_synth(uint8_t synth, uint8_t *data, uint32_t len)
+{
+    uint8_t status = data[0] & 0xF0;
+    if (status == 0xB0 && data[1] == 0x40) amy_received_pedal(synth, data[2]);
+    else if (status == 0xB0 && data[1] == 0x7B) amy_received_all_notes_off(synth);
+    else if (status == 0xB0) amy_received_control_change(synth, data[1], data[2]);
+    else if (status == 0xC0) amy_received_program_change(synth, data[1]);
+    else if (status == 0xE0) amy_received_pitch_bend(synth, data[1], data[2]);
+    midi_message_handler_to_queue(status, synth, data + 1, (uint16_t)(len - 1),
+                                  AMY_UNSET_VALUE((uint32_t)0), NULL, NULL);
 }
 
 int AMY_GEM_send_packet(uint8_t cable, uint8_t cin,
@@ -634,8 +661,34 @@ int AMY_GEM_send_packet(uint8_t cable, uint8_t cin,
         return -1;
     }
     uint8_t data[3] = { b1, b2, b3 };
-    amy_event_midi_message_received(data, len, 0);
+    if (b1 >= 0xF0) {
+        /* System messages carry no channel: AMY's own handling. */
+        amy_event_midi_message_received(data, len, 0);
+        return 0;
+    }
+    uint16_t mask = s_channel_synths[b1 & 0x0F];
+    for (uint8_t synth = 1; mask != 0; synth++, mask >>= 1) {
+        if (mask & 1) deliver_to_synth(synth, data, len);
+    }
     return 0;
+}
+
+int AMY_GEM_bind_synth(uint8_t synth, int channel)
+{
+    if (synth < 1 || synth > AMY_GEM_MAX_PARTS) return -1;
+    if (channel > 15) return -1;
+    uint16_t bit = (uint16_t)(1u << (synth - 1));
+    for (int ch = 0; ch < 16; ch++) {
+        uint16_t m = s_channel_synths[ch];
+        m = (ch == channel) ? (m | bit) : (m & ~bit);
+        s_channel_synths[ch] = m;
+    }
+    return 0;
+}
+
+uint16_t AMY_GEM_channel_synths(uint8_t channel)
+{
+    return channel < 16 ? s_channel_synths[channel] : 0;
 }
 
 uint8_t AMY_GEM_transport_bit(void)
@@ -954,6 +1007,8 @@ int AMY_GEM_send_packet(uint8_t cable, uint8_t cin, uint8_t b1, uint8_t b2, uint
     (void)cable; (void)cin; (void)b1; (void)b2; (void)b3;
     return -1;
 }
+int AMY_GEM_bind_synth(uint8_t synth, int channel) { (void)synth; (void)channel; return -1; }
+uint16_t AMY_GEM_channel_synths(uint8_t channel) { (void)channel; return 0; }
 uint8_t AMY_GEM_transport_bit(void) { return 0; }
 float AMY_GEM_render_load(void) { return 0.0f; }
 uint32_t AMY_GEM_overload_count(void) { return 0; }
