@@ -74,7 +74,7 @@ static volatile uint16_t s_channel_synths[16];
 /* Output gain in Q15 (32768 = unity), applied to every block on its way to
  * I2S. For boards with no codec to set a volume on. */
 static volatile int32_t s_gain_q15 = 32768;
-static uint8_t s_transport_bit = 0;
+static uint16_t s_transport_bit = 0;
 
 /* How far the audio task got in starting up, for the timeout message in
  * AMY_GEM_start(). */
@@ -691,7 +691,7 @@ uint16_t AMY_GEM_channel_synths(uint8_t channel)
     return channel < 16 ? s_channel_synths[channel] : 0;
 }
 
-uint8_t AMY_GEM_transport_bit(void)
+uint16_t AMY_GEM_transport_bit(void)
 {
     return s_transport_bit;
 }
@@ -1009,7 +1009,7 @@ int AMY_GEM_send_packet(uint8_t cable, uint8_t cin, uint8_t b1, uint8_t b2, uint
 }
 int AMY_GEM_bind_synth(uint8_t synth, int channel) { (void)synth; (void)channel; return -1; }
 uint16_t AMY_GEM_channel_synths(uint8_t channel) { (void)channel; return 0; }
-uint8_t AMY_GEM_transport_bit(void) { return 0; }
+uint16_t AMY_GEM_transport_bit(void) { return 0; }
 float AMY_GEM_render_load(void) { return 0.0f; }
 uint32_t AMY_GEM_overload_count(void) { return 0; }
 uint32_t AMY_GEM_block_count(void) { return 0; }

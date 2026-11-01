@@ -72,7 +72,7 @@ uint16_t AMY_GEM_channel_synths(uint8_t channel);
 
 /* The bit picoruby-midi's transport registry assigned to AMY (0 until
  * AMY_GEM_start() succeeded). This is the transport_id seen from Ruby. */
-uint8_t AMY_GEM_transport_bit(void);
+uint16_t AMY_GEM_transport_bit(void);
 
 /* Smoothed fraction of real time spent rendering (0.0 .. 1.0+). */
 float AMY_GEM_render_load(void);
