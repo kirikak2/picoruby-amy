@@ -40,6 +40,14 @@ int AMY_GEM_start(void);
 /* Whether the engine is running. */
 bool AMY_GEM_running(void);
 
+#if AMY_GEM_POLLED
+/* AMY_GEM_POLLED hosts: render up to `blocks` blocks now (each handed to
+ * amy_gem_polled_sink()). Returns how many were rendered. */
+int AMY_GEM_render(int blocks);
+/* Defined by the host: one block of interleaved stereo int16 */
+void amy_gem_polled_sink(const int16_t *samples, size_t frames);
+#endif
+
 /* Return AMY to its power-on state: every synth, patch, CC mapping,
  * channel binding and effect is cleared. The audio task and I2S keep
  * running. */

@@ -36,12 +36,21 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
-#include "driver/i2s_std.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#if AMY_GEM_POLLED
+/* No I2S and no cycle counter: times are in microseconds (one "cycle" per
+ * us), and all memory counts as internal */
+#include "esp_timer.h"
+static inline uint32_t esp_cpu_get_cycle_count(void) { return (uint32_t)esp_timer_get_time(); }
+static inline uint32_t esp_rom_get_cpu_ticks_per_us(void) { return 1; }
+static inline bool esp_ptr_internal(const void *p) { (void)p; return true; }
+#else
+#include "driver/i2s_std.h"
 #include "esp_cpu.h"
 #include "esp_rom_sys.h"
 #include "esp_memory_utils.h"
+#endif
 #include "amy.h"
 #include "midi_transport.h"   /* picoruby-midi: transport registry */
 #if CONFIG_IDF_TARGET_ESP32P4
@@ -59,7 +68,9 @@ static const char *TAG = "AMY";
 static amy_gem_power_cb_t s_power_cb = NULL;
 static void *s_power_arg = NULL;
 
+#if !AMY_GEM_POLLED
 static i2s_chan_handle_t s_tx = NULL;
+#endif
 static TaskHandle_t s_task = NULL;
 static SemaphoreHandle_t s_ready = NULL;
 static volatile bool s_running = false;
@@ -216,6 +227,23 @@ static void perf_service(void)
     xSemaphoreGive(s_perf_done);
 }
 
+#if AMY_GEM_POLLED
+static size_t write_samples(const uint8_t *buffer, size_t nbytes)
+{
+    int32_t gain = s_gain_q15;
+    if (gain != 32768) {
+        int16_t *s = (int16_t *)buffer;
+        size_t n = nbytes / sizeof(int16_t);
+        for (size_t i = 0; i < n; i++) {
+            s[i] = (int16_t)((s[i] * gain) >> 15);
+        }
+    }
+    uint32_t rendered = esp_cpu_get_cycle_count();
+    amy_gem_polled_sink((const int16_t *)buffer, nbytes / (sizeof(int16_t) * AMY_NCHANS));
+    perf_record(rendered - s_render_start, 0);
+    return nbytes;
+}
+#else /* !AMY_GEM_POLLED */
 #if CONFIG_IDF_TARGET_ESP32P4
 /* ---------------------------------------------------------------------
  * ESP32-P4: I2S pins on the USB PHY pads
@@ -385,6 +413,8 @@ static esp_err_t i2s_setup(void)
     return err;
 }
 
+#endif /* AMY_GEM_POLLED */
+
 /* ---------------------------------------------------------------------
  * Audio task
  * --------------------------------------------------------------------- */
@@ -446,6 +476,7 @@ static amy_config_t make_config(void)
     return c;
 }
 
+#if !AMY_GEM_POLLED
 static void audio_task(void *arg)
 {
     (void)arg;
@@ -492,6 +523,7 @@ static void audio_task(void *arg)
         s_blocks++;
     }
 }
+#endif /* !AMY_GEM_POLLED */
 
 /* ---------------------------------------------------------------------
  * MIDI transport
@@ -533,6 +565,38 @@ void AMY_GEM_set_power_callback(amy_gem_power_cb_t cb, void *arg)
     s_power_arg = arg;
 }
 
+#if AMY_GEM_POLLED
+int AMY_GEM_start(void)
+{
+    if (s_running) return 0;
+    if (s_power_cb) s_power_cb(true, s_power_arg);
+    amy_start(make_config());
+    s_block_cycles = AMY_BLOCK_US * esp_rom_get_cpu_ticks_per_us();
+    perf_reset();
+    s_running = true;
+    ESP_LOGI(TAG, "AMY running: %d Hz, %d-frame blocks (rendered by the host)",
+             AMY_SAMPLE_RATE, AMY_BLOCK_SIZE);
+    s_transport_bit = MIDI_transport_register(&s_transport);
+    if (s_transport_bit == 0) {
+        ESP_LOGW(TAG, "MIDI transport registry full: trigger() will not reach AMY");
+    }
+    return 0;
+}
+
+int AMY_GEM_render(int blocks)
+{
+    if (!s_running) return 0;
+    int n = 0;
+    for (; n < blocks; n++) {
+        perf_service();
+        s_block_oscs = count_audible_oscs();
+        s_render_start = esp_cpu_get_cycle_count();
+        amy_update();   /* render one block, hand it over via write_samples() */
+        s_blocks++;
+    }
+    return n;
+}
+#else
 int AMY_GEM_start(void)
 {
     if (s_running) return 0;
@@ -586,6 +650,7 @@ int AMY_GEM_start(void)
     }
     return 0;
 }
+#endif /* AMY_GEM_POLLED */
 
 bool AMY_GEM_running(void)
 {
@@ -732,6 +797,9 @@ int AMY_GEM_perf_report(char *buf, size_t len, bool reset)
     if (req == NULL) return -1;
     req->reset = reset;
     __atomic_store_n(&s_perf_req, req, __ATOMIC_RELEASE);
+#if AMY_GEM_POLLED
+    perf_service();   /* one thread: answer it here */
+#endif
     if (xSemaphoreTake(s_perf_done, pdMS_TO_TICKS(100)) != pdTRUE) {
         /* The audio task did not come round. If it still has not taken the
          * request, withdraw it; if it has, it is about to answer. */

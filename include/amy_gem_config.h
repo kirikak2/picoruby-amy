@@ -17,6 +17,14 @@
 
 /* I2S output pins. -1 = not connected (MCLK only when the receiving chip
  * needs a master clock, e.g. a codec). */
+/* AMY_GEM_POLLED: a host without tasks or I2S (the MIDoRI simulator, in
+ * the browser). No audio task: the host calls AMY_GEM_render() from its
+ * loop, and each rendered block goes to amy_gem_polled_sink(), which the
+ * host defines. */
+#ifndef AMY_GEM_POLLED
+#  define AMY_GEM_POLLED 0
+#endif
+
 #ifndef AMY_GEM_I2S_BCLK
 #  define AMY_GEM_I2S_BCLK -1
 #endif
